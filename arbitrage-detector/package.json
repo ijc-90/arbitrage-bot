@@ -1,0 +1,17 @@
+{
+  "name": "arb-detector",
+  "version": "0.1.0",
+  "scripts": {
+    "start": "npx ts-node detector.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.0",
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.3.0"
+  }
+}

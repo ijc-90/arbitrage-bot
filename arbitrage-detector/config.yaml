@@ -1,0 +1,19 @@
+pairs:
+  - symbol: BTCUSDT
+    exchanges: [binance, bybit]
+  - symbol: ETHUSDT
+    exchanges: [binance, bybit]
+
+exchanges:
+  binance:
+    taker_fee_pct: 0.06
+    slippage_estimate_pct: 0.04
+  bybit:
+    taker_fee_pct: 0.06
+    slippage_estimate_pct: 0.04
+
+capital_per_trade_usdt: 500
+entry_buffer_multiplier: 2.0
+min_net_spread_pct: 0.15
+slow_poll_interval_ms: 5000
+fast_poll_interval_ms: 200

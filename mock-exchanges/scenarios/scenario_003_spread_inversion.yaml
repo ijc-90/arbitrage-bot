@@ -1,0 +1,49 @@
+name: scenario_003_spread_inversion
+
+# step 0: no opportunity        (initial load)
+# step 1: opportunity opens     (bybit bid > binance ask)
+# step 2: inversion             (binance ask jumps past bybit bid)
+
+exchanges:
+  binance:
+    symbol: BTCUSDT
+    timeline:
+      - bid: "43249.00"
+        ask: "43255.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+      - bid: "43249.00"
+        ask: "43250.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+      - bid: "43256.00"
+        ask: "43258.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+
+  bybit:
+    symbol: BTCUSDT
+    timeline:
+      - bid: "43250.00"
+        ask: "43256.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+      - bid: "43253.00"
+        ask: "43254.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+      - bid: "43254.00"
+        ask: "43255.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+
+  kraken:
+    symbol: XBTUSD
+    result_key: XXBTZUSD
+    timeline:
+      - bid: "43249.00"
+        ask: "43255.00"
+      - bid: "43249.00"
+        ask: "43250.00"
+      - bid: "43256.00"
+        ask: "43258.00"

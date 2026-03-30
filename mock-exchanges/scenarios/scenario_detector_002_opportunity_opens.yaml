@@ -1,0 +1,40 @@
+name: scenario_detector_002_opportunity_opens
+
+exchanges:
+  binance:
+    symbol: BTCUSDT
+    timeline:
+      -
+        bid: "43249.00"
+        ask: "43250.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+      -
+        bid: "43249.00"
+        ask: "43250.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+      -
+        bid: "43249.00"
+        ask: "43250.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+
+  bybit:
+    symbol: BTCUSDT
+    timeline:
+      -
+        bid: "43253.00"
+        ask: "43255.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+      -
+        bid: "43253.00"
+        ask: "43255.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+      -
+        bid: "43490.00"
+        ask: "43492.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"

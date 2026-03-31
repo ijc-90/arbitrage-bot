@@ -1,0 +1,52 @@
+name: scenario_003_holdout
+
+# Holdout scenario — ETH/USDT, unknown to builder.
+# Tests that scenario loading works across different symbols and price ranges.
+#
+# step 0: no opportunity  (Binance ask > Bybit bid)
+# step 1: opportunity     (Binance ask < Bybit bid, +0.50 spread)
+# step 2: convergence     (Binance ask > Bybit bid, spread closed)
+
+exchanges:
+  binance:
+    symbol: ETHUSDT
+    timeline:
+      - bid: "2648.00"
+        ask: "2655.00"
+        bid_qty: "3.200"
+        ask_qty: "2.800"
+      - bid: "2649.00"
+        ask: "2650.00"
+        bid_qty: "3.200"
+        ask_qty: "2.800"
+      - bid: "2651.00"
+        ask: "2652.00"
+        bid_qty: "3.200"
+        ask_qty: "2.800"
+
+  bybit:
+    symbol: ETHUSDT
+    timeline:
+      - bid: "2649.00"
+        ask: "2656.00"
+        bid_qty: "2.500"
+        ask_qty: "2.100"
+      - bid: "2650.50"
+        ask: "2657.00"
+        bid_qty: "2.500"
+        ask_qty: "2.100"
+      - bid: "2651.50"
+        ask: "2652.50"
+        bid_qty: "2.500"
+        ask_qty: "2.100"
+
+  kraken:
+    symbol: ETHUSD
+    result_key: XETHZUSD
+    timeline:
+      - bid: "2648.00"
+        ask: "2655.00"
+      - bid: "2649.00"
+        ask: "2650.00"
+      - bid: "2651.00"
+        ask: "2652.00"

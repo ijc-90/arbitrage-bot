@@ -1,0 +1,42 @@
+name: scenario_002_convergence
+
+exchanges:
+  binance:
+    symbol: BTCUSDT
+    timeline:
+      -
+        bid: "43249.00"
+        ask: "43255.00"
+      -
+        bid: "43249.00"
+        ask: "43250.00"
+      -
+        bid: "43251.00"
+        ask: "43252.00"
+
+  bybit:
+    symbol: BTCUSDT
+    timeline:
+      -
+        bid: "43250.00"
+        ask: "43256.00"
+      -
+        bid: "43253.00"
+        ask: "43254.00"
+      -
+        bid: "43251.00"
+        ask: "43252.00"
+
+  kraken:
+    symbol: XBTUSD
+    result_key: XXBTZUSD
+    timeline:
+      -
+        bid: "43249.00"
+        ask: "43255.00"
+      -
+        bid: "43249.00"
+        ask: "43250.00"
+      -
+        bid: "43251.00"
+        ask: "43252.00"

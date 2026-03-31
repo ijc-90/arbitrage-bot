@@ -1,0 +1,51 @@
+name: scenario_detector_003_holdout
+
+# HOLDOUT — not visible to builder.
+# ETH/USDT full lifecycle: opportunity opens then closes (convergence).
+# Tests that tracker correctly logs OPENED and CLOSED events.
+#
+# step 0: no opportunity — main loop advances
+#         binance ask=2655.00 > bybit bid=2649.00
+# step 1: opportunity opens — tracker takes over advancing
+#         bybit bid=2665.50 > binance ask=2650.00, raw=0.585%, net=0.385%
+# step 2: opportunity closes (convergence) — tracker logs CLOSED, main loop resumes
+#         binance ask=2652.00 > bybit bid=2651.50
+
+exchanges:
+  binance:
+    symbol: ETHUSDT
+    timeline:
+      -
+        bid: "2648.00"
+        ask: "2655.00"
+        bid_qty: "3.200"
+        ask_qty: "2.800"
+      -
+        bid: "2649.00"
+        ask: "2650.00"
+        bid_qty: "3.200"
+        ask_qty: "2.800"
+      -
+        bid: "2651.00"
+        ask: "2652.00"
+        bid_qty: "3.200"
+        ask_qty: "2.800"
+
+  bybit:
+    symbol: ETHUSDT
+    timeline:
+      -
+        bid: "2649.00"
+        ask: "2656.00"
+        bid_qty: "2.500"
+        ask_qty: "2.100"
+      -
+        bid: "2665.50"
+        ask: "2667.00"
+        bid_qty: "2.500"
+        ask_qty: "2.100"
+      -
+        bid: "2651.50"
+        ask: "2652.50"
+        bid_qty: "2.500"
+        ask_qty: "2.100"

@@ -362,11 +362,8 @@ krakenRouter.get("/0/public/Depth", (req: Request, res: Response) => {
 
 function resolveScenarioPath(name: string): string | null {
   const serverDir = path.dirname(require.main!.filename);
-  const candidates = [
-    path.join(serverDir, "scenarios", `${name}.yaml`),
-    path.join(serverDir, "..", "scenarios", `${name}.yaml`),
-  ];
-  return candidates.find(p => fs.existsSync(p)) ?? null;
+  const scenarioPath = path.join(serverDir, "..", "scenarios", `${name}.yaml`);
+  return fs.existsSync(scenarioPath) ? scenarioPath : null;
 }
 
 const scenarioRouter = express.Router();

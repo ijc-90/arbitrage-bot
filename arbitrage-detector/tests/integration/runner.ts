@@ -6,6 +6,10 @@ import { runUnit } from './suites/suite_unit'
 import { runNoOpportunity } from './suites/suite_no_opportunity'
 import { runOpportunityOpens } from './suites/suite_opportunity_opens'
 import { runHoldout } from './suites/suite_holdout'
+import { runBelowFees } from './suites/suite_below_fees'
+import { runBelowBuffer } from './suites/suite_below_buffer'
+import { runPricesIntersect } from './suites/suite_prices_intersect'
+import { runInversion } from './suites/suite_inversion'
 
 const MODULE_ROOT    = path.resolve(__dirname, '../..')
 const MOCK_WORKSPACE = path.join(MODULE_ROOT, '../mock-exchanges')
@@ -73,6 +77,18 @@ async function main() {
 
   clearLogs(LOGS_DIR)
   add(await runHoldout(LOGS_DIR, () => runDetector('scenario_detector_003_holdout', 3)))
+
+  clearLogs(LOGS_DIR)
+  add(await runBelowFees(LOGS_DIR, () => runDetector('scenario_detector_004_below_fees', 3)))
+
+  clearLogs(LOGS_DIR)
+  add(await runBelowBuffer(LOGS_DIR, () => runDetector('scenario_detector_005_below_buffer', 3)))
+
+  clearLogs(LOGS_DIR)
+  add(await runPricesIntersect(LOGS_DIR, () => runDetector('scenario_detector_006_prices_intersect', 3)))
+
+  clearLogs(LOGS_DIR)
+  add(await runInversion(LOGS_DIR, () => runDetector('scenario_detector_007_inversion', 5)))
 
   mock.kill()
   await new Promise(r => setTimeout(r, 200))

@@ -1,0 +1,50 @@
+name: scenario_detector_004_below_fees
+
+# D — Raw spread exists but smaller than all-in transaction costs.
+# bybit bid > binance ask (positive raw), but net = raw - fees < 0.
+#
+# binance ask=43250.00, bybit bid=43255.00
+# raw  = (43255 - 43250) / 43250 * 100 = 0.012%
+# fees = taker(binance) + taker(bybit) + slip(binance) + slip(bybit) = 0.20%
+# net  = 0.012 - 0.20 = -0.188%  → no opportunity
+#
+# All 3 steps are identical: spread never improves, never triggers.
+
+exchanges:
+  binance:
+    symbol: BTCUSDT
+    timeline:
+      -
+        bid: "43249.00"
+        ask: "43250.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+      -
+        bid: "43249.00"
+        ask: "43250.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+      -
+        bid: "43249.00"
+        ask: "43250.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+
+  bybit:
+    symbol: BTCUSDT
+    timeline:
+      -
+        bid: "43255.00"
+        ask: "43257.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+      -
+        bid: "43255.00"
+        ask: "43257.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+      -
+        bid: "43255.00"
+        ask: "43257.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"

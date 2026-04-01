@@ -1,0 +1,56 @@
+name: scenario_detector_005_below_buffer
+
+# E — Net spread is positive and above min_net_spread_pct, but below the
+#     entry_buffer_multiplier threshold. Tests that the buffer config knob works.
+#
+# binance ask=43250.00, bybit bid=43423.00
+# raw  = (43423 - 43250) / 43250 * 100 = 0.400%
+# fees = 0.20%
+# net  = 0.400 - 0.20 = 0.200%
+#
+# With config: min_net_spread_pct=0.10, entry_buffer_multiplier=1.5
+# buffer_threshold = 0.20 * 1.5 = 0.30%
+#
+# net=0.200 >= min_net=0.10  ✓  (would pass minimum check alone)
+# net=0.200 <  buffer=0.30   ✗  (fails buffer guard → no opportunity)
+#
+# All 3 steps identical: confirms no opportunity fires despite positive net.
+
+exchanges:
+  binance:
+    symbol: BTCUSDT
+    timeline:
+      -
+        bid: "43249.00"
+        ask: "43250.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+      -
+        bid: "43249.00"
+        ask: "43250.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+      -
+        bid: "43249.00"
+        ask: "43250.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+
+  bybit:
+    symbol: BTCUSDT
+    timeline:
+      -
+        bid: "43423.00"
+        ask: "43425.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+      -
+        bid: "43423.00"
+        ask: "43425.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"
+      -
+        bid: "43423.00"
+        ask: "43425.00"
+        bid_qty: "1.500"
+        ask_qty: "1.200"

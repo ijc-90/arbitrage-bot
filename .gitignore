@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# TypeScript build output
+dist/
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# Runtime logs
+logs/
+
+# Environment variables (contain exchange URLs / secrets)
+.env
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp

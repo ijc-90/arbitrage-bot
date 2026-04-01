@@ -106,10 +106,24 @@ const binanceDepths: Record<string, OrderBook> = {
   },
 };
 
+// 24h volume data — used by pair-fetcher (representative mock values)
+const binanceTickers24hr = [
+  { symbol: "BTCUSDT", volume: "15234.50",   quoteVolume: "658432100.00" },
+  { symbol: "ETHUSDT", volume: "112500.00",  quoteVolume: "225000000.00" },
+  { symbol: "SOLUSDT", volume: "820000.00",  quoteVolume: "98400000.00"  },
+  { symbol: "ARBUSDT", volume: "4800000.00", quoteVolume: "3360000.00"   },
+  { symbol: "WIFUSDT", volume: "1800000.00", quoteVolume: "3600000.00"   },
+];
+
 const binanceRouter = express.Router();
 
 binanceRouter.get("/api/v3/ping", (_req: Request, res: Response) => {
   res.json({});
+});
+
+// All pairs with 24h volume — used by pair-fetcher
+binanceRouter.get("/api/v3/ticker/24hr", (_req: Request, res: Response) => {
+  res.json(binanceTickers24hr);
 });
 
 binanceRouter.get("/api/v3/ticker/bookTicker", (req: Request, res: Response) => {
@@ -155,23 +169,28 @@ binanceRouter.get("/api/v3/depth", (req: Request, res: Response) => {
 
 // --- Bybit ---
 
-type BybitTickerItem = {
-  symbol: string;
-  bid1Price: string;
-  bid1Size: string;
-  ask1Price: string;
-  ask1Size: string;
-};
-
 type BybitOrderbookResult = {
   s: string;
   b: [string, string][];
   a: [string, string][];
 };
 
+type BybitTickerItem = {
+  symbol: string;
+  bid1Price: string;
+  bid1Size: string;
+  ask1Price: string;
+  ask1Size: string;
+  volume24h: string;   // base asset 24h volume — used by pair-fetcher
+  turnover24h: string; // quote asset 24h volume (USDT)
+};
+
 const bybitTickers: Record<string, BybitTickerItem> = {
-  BTCUSDT: { symbol: "BTCUSDT", bid1Price: "43249.00", bid1Size: "1.500", ask1Price: "43251.50", ask1Size: "1.200" },
-  ETHUSDT: { symbol: "ETHUSDT", bid1Price: "2649.00", bid1Size: "5.200", ask1Price: "2651.00", ask1Size: "4.100" },
+  BTCUSDT: { symbol: "BTCUSDT", bid1Price: "43249.00", bid1Size: "1.500", ask1Price: "43251.50", ask1Size: "1.200", volume24h: "12000.00",   turnover24h: "518400000.00" },
+  ETHUSDT: { symbol: "ETHUSDT", bid1Price: "2649.00",  bid1Size: "5.200", ask1Price: "2651.00",  ask1Size: "4.100", volume24h: "95000.00",    turnover24h: "190000000.00" },
+  SOLUSDT: { symbol: "SOLUSDT", bid1Price: "120.00",   bid1Size: "500.0", ask1Price: "120.10",   ask1Size: "500.0", volume24h: "650000.00",   turnover24h: "78000000.00"  },
+  ARBUSDT: { symbol: "ARBUSDT", bid1Price: "0.70",     bid1Size: "1000",  ask1Price: "0.701",    ask1Size: "1000",  volume24h: "3900000.00",  turnover24h: "2730000.00"   },
+  WIFUSDT: { symbol: "WIFUSDT", bid1Price: "2.00",     bid1Size: "500",   ask1Price: "2.001",    ask1Size: "500",   volume24h: "1500000.00",  turnover24h: "3000000.00"   },
 };
 
 const bybitOrderbooks: Record<string, BybitOrderbookResult> = {
@@ -200,7 +219,18 @@ bybitRouter.get("/v5/market/time", (_req: Request, res: Response) => {
 bybitRouter.get("/v5/market/tickers", (req: Request, res: Response) => {
   const symbol = req.query.symbol as string | undefined;
   const category = (req.query.category as string | undefined) ?? "spot";
-  if (!symbol || !bybitTickers[symbol]) {
+
+  // No symbol — return all tickers (used by pair-fetcher for 24h volume)
+  if (!symbol) {
+    res.json({
+      retCode: 0,
+      retMsg: "OK",
+      result: { category, list: Object.values(bybitTickers) },
+    });
+    return;
+  }
+
+  if (!bybitTickers[symbol]) {
     res.json({ retCode: 10001, retMsg: "Invalid symbol" });
     return;
   }

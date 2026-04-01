@@ -61,22 +61,29 @@ opportunities (
 ticks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   opp_id TEXT,
-  ts INTEGER,
-  ask_buy REAL,
-  bid_sell REAL,
-  net_spread_pct REAL
+  fetched_at_ms INTEGER,       -- when this tick was collected
+  ask_cheap REAL,              -- ask price on the cheap exchange (buy side)
+  bid_expensive REAL,          -- bid price on the expensive exchange (sell side)
+  net_spread_pct REAL,
+  -- Per-exchange resolution: when was each exchange's data last successfully fetched
+  -- before this tick. Allows computing how stale each side was independently.
+  -- open_resolution_ms on the opportunity = max(cheap_last_fetched_gap, expensive_last_fetched_gap)
+  cheap_last_fetched_ms INTEGER,      -- ms since cheap exchange was last successfully fetched
+  expensive_last_fetched_ms INTEGER   -- ms since expensive exchange was last successfully fetched
 )
 
 prices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts INTEGER,
+  fetched_at_ms INTEGER,
   pair TEXT,
-  exchange_buy TEXT,
-  exchange_sell TEXT,
-  ask_buy REAL,
-  bid_sell REAL,
+  exchange_cheap TEXT,         -- exchange with the lower ask at this moment
+  exchange_expensive TEXT,     -- exchange with the higher bid at this moment
+  ask_cheap REAL,
+  bid_expensive REAL,
   net_spread_pct REAL,
-  is_opportunity INTEGER   -- 0/1
+  is_opportunity INTEGER,      -- 0/1
+  cheap_last_fetched_ms INTEGER,
+  expensive_last_fetched_ms INTEGER
 )
 ```
 
@@ -85,7 +92,9 @@ JSONL kept in parallel as audit log.
 
 **Resolution in the dashboard:** show duration as a range when resolution is meaningful, e.g. `12ms – 5.2s` instead of a single misleading number. High-resolution closes (fast poll is tight) vs low-resolution opens (slow poll was slow) can be surfaced visually.
 
-**Implementation note for `open_resolution_ms`:** requires a `lastScannedAt: Map<string, number>` maintained in the `detector.ts` main loop, updated each time a pair is checked. Passed into `OpportunityTracker.open()` alongside the spread result. The gap is the actual elapsed time, not the configured `slow_poll_interval_ms` — important because pairs are checked sequentially, so later pairs in the list have a longer real gap than the first.
+**Implementation note for open resolution:** `ExchangeClient` needs to track `lastSuccessfulFetchAt` per exchange (not per pair). The main loop passes these into `OpportunityTracker.open()` at detection time. `open_resolution_ms` on the opportunity = `max(cheap_gap, expensive_gap)` — worst case wins. First scan after startup = `NULL` (no prior fetch data, unknown resolution).
+
+**Naming convention:** `exchange_cheap` / `exchange_expensive` used consistently across `prices` and `ticks` tables — more semantically stable than `exchange_buy` / `exchange_sell` (which are directional and only meaningful within an opportunity context).
 
 ### Display: Web Dashboard
 

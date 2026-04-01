@@ -1,6 +1,5 @@
 import { spawn, ChildProcess } from 'node:child_process'
 import * as path from 'node:path'
-import * as fs from 'node:fs'
 import { clearLogs } from './helpers'
 import { runUnit } from './suites/suite_unit'
 import { runNoOpportunity } from './suites/suite_no_opportunity'
@@ -15,6 +14,7 @@ const MODULE_ROOT    = path.resolve(__dirname, '../..')
 const MOCK_WORKSPACE = path.join(MODULE_ROOT, '../mock-exchanges')
 const ARB_WORKSPACE  = MODULE_ROOT
 const LOGS_DIR       = path.join(ARB_WORKSPACE, 'logs')
+const DB_PATH        = path.join(LOGS_DIR, 'arb.db')
 const MOCK_BASE      = 'http://localhost:3000'
 
 async function waitForServer(url: string, timeoutMs = 10000): Promise<void> {
@@ -46,6 +46,7 @@ async function runDetector(scenario: string, steps: number): Promise<void> {
       '--config', 'config.test.yaml',
       '--steps', String(steps),
       '--advance-url', MOCK_BASE,
+      '--db', DB_PATH,
     ], {
       cwd: ARB_WORKSPACE,
       stdio: 'pipe',
@@ -68,27 +69,27 @@ async function main() {
   // Unit tests — no server needed
   add(await runUnit())
 
-  // Integration tests — each clears logs before running
+  // Integration tests — each clears logs+db before running
   clearLogs(LOGS_DIR)
-  add(await runNoOpportunity(LOGS_DIR, () => runDetector('scenario_detector_001_no_opportunity', 3)))
+  add(await runNoOpportunity(DB_PATH, () => runDetector('scenario_detector_001_no_opportunity', 3)))
 
   clearLogs(LOGS_DIR)
-  add(await runOpportunityOpens(LOGS_DIR, () => runDetector('scenario_detector_002_opportunity_opens', 3)))
+  add(await runOpportunityOpens(DB_PATH, () => runDetector('scenario_detector_002_opportunity_opens', 3)))
 
   clearLogs(LOGS_DIR)
-  add(await runHoldout(LOGS_DIR, () => runDetector('scenario_detector_003_holdout', 3)))
+  add(await runHoldout(DB_PATH, () => runDetector('scenario_detector_003_holdout', 3)))
 
   clearLogs(LOGS_DIR)
-  add(await runBelowFees(LOGS_DIR, () => runDetector('scenario_detector_004_below_fees', 3)))
+  add(await runBelowFees(DB_PATH, () => runDetector('scenario_detector_004_below_fees', 3)))
 
   clearLogs(LOGS_DIR)
-  add(await runBelowBuffer(LOGS_DIR, () => runDetector('scenario_detector_005_below_buffer', 3)))
+  add(await runBelowBuffer(DB_PATH, () => runDetector('scenario_detector_005_below_buffer', 3)))
 
   clearLogs(LOGS_DIR)
-  add(await runPricesIntersect(LOGS_DIR, () => runDetector('scenario_detector_006_prices_intersect', 3)))
+  add(await runPricesIntersect(DB_PATH, () => runDetector('scenario_detector_006_prices_intersect', 3)))
 
   clearLogs(LOGS_DIR)
-  add(await runInversion(LOGS_DIR, () => runDetector('scenario_detector_007_inversion', 5)))
+  add(await runInversion(DB_PATH, () => runDetector('scenario_detector_007_inversion', 5)))
 
   mock.kill()
   await new Promise(r => setTimeout(r, 200))

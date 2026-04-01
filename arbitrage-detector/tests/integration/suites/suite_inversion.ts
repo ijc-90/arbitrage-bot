@@ -6,12 +6,12 @@
 // step 2: neutral — tracker closes OPP A (CONVERGENCE)
 // step 3: OPP B — buy bybit, sell binance (binance bid > bybit ask, opposite)
 //
-// Expected log sequence: OPENED(binance→bybit) → CLOSED → OPENED(bybit→binance)
+// Expected DB state: two rows in opportunities, oppA closed, oppB still open
 
-import { Results, makeResults, check, readJsonl } from '../helpers'
+import { Results, makeResults, check, openDb, OppRow } from '../helpers'
 
 export async function runInversion(
-  logsDir: string,
+  dbPath: string,
   runDetector: () => Promise<void>
 ): Promise<Results> {
   console.log('\n--- suite_inversion ---')
@@ -19,48 +19,46 @@ export async function runInversion(
 
   await runDetector()
 
-  const opps = readJsonl(`${logsDir}/opportunities.jsonl`)
+  const db = openDb(dbPath)
+  const allOpps    = db.prepare('SELECT * FROM opportunities ORDER BY opened_at_ms').all() as OppRow[]
+  const closedOpps = allOpps.filter(o => o.close_reason !== null)
+  db.close()
 
-  const openedEvents = opps.filter((e: any) => e.event === 'OPENED')
-  const closedEvents = opps.filter((e: any) => e.event === 'CLOSED')
+  check(r, 'inversion/two_opportunities', allOpps.length === 2,
+    `opportunities.length=${allOpps.length}`)
+  check(r, 'inversion/one_closed',        closedOpps.length === 1,
+    `closed.length=${closedOpps.length}`)
 
-  check(r, 'inversion/two_opened_events',    openedEvents.length === 2,
-    `opened.length=${openedEvents.length}`)
-  check(r, 'inversion/one_closed_event',     closedEvents.length === 1,
-    `closed.length=${closedEvents.length}`)
-
-  const oppA = openedEvents[0]
-  const oppB = openedEvents[1]
-  const closed = closedEvents[0]
+  const oppA   = allOpps[0]
+  const oppB   = allOpps[1]
+  const closed = closedOpps[0]  // should be oppA
 
   // OPP A: buy on binance, sell on bybit
-  check(r, 'inversion/oppA_buy_binance',     oppA?.exchange_buy === 'binance',
+  check(r, 'inversion/oppA_buy_binance',  oppA?.exchange_buy === 'binance',
     `exchange_buy=${oppA?.exchange_buy}`)
-  check(r, 'inversion/oppA_sell_bybit',      oppA?.exchange_sell === 'bybit',
+  check(r, 'inversion/oppA_sell_bybit',   oppA?.exchange_sell === 'bybit',
     `exchange_sell=${oppA?.exchange_sell}`)
 
-  // CLOSED belongs to OPP A
-  check(r, 'inversion/closed_is_oppA',       closed?.opp_id === oppA?.opp_id,
-    `closed.opp_id=${closed?.opp_id} oppA.opp_id=${oppA?.opp_id}`)
-  check(r, 'inversion/closed_convergence',   closed?.reason === 'CONVERGENCE',
-    `reason=${closed?.reason}`)
+  // CLOSED row is OPP A
+  check(r, 'inversion/closed_is_oppA',    closed?.id === oppA?.id,
+    `closed.id=${closed?.id} oppA.id=${oppA?.id}`)
+  check(r, 'inversion/closed_convergence', closed?.close_reason === 'CONVERGENCE',
+    `close_reason=${closed?.close_reason}`)
 
   // OPP B: opposite direction — buy on bybit, sell on binance
-  check(r, 'inversion/oppB_buy_bybit',       oppB?.exchange_buy === 'bybit',
+  check(r, 'inversion/oppB_buy_bybit',    oppB?.exchange_buy === 'bybit',
     `exchange_buy=${oppB?.exchange_buy}`)
-  check(r, 'inversion/oppB_sell_binance',    oppB?.exchange_sell === 'binance',
+  check(r, 'inversion/oppB_sell_binance', oppB?.exchange_sell === 'binance',
     `exchange_sell=${oppB?.exchange_sell}`)
 
-  // OPP B is still open when steps exhaust (no CLOSED for it)
-  check(r, 'inversion/oppB_still_open',
-    closedEvents.every((e: any) => e.opp_id !== oppB?.opp_id),
-    `oppB has an unexpected CLOSED event`)
+  // OPP B is still open when steps exhaust
+  check(r, 'inversion/oppB_still_open',   oppB?.close_reason === null,
+    `close_reason=${oppB?.close_reason}`)
 
-  // OPP A was closed before OPP B opened (ordering check)
-  const closedTs  = closed?.ts ?? ''
-  const oppBOpenTs = oppB?.ts ?? ''
-  check(r, 'inversion/closed_before_oppB',   closedTs <= oppBOpenTs,
-    `OPP A closed at ${closedTs}, OPP B opened at ${oppBOpenTs}`)
+  // OPP A was closed before OPP B opened (ms integer comparison)
+  check(r, 'inversion/closed_before_oppB',
+    (closed?.closed_at_ms ?? 0) <= (oppB?.opened_at_ms ?? 0),
+    `oppA closed_at=${closed?.closed_at_ms}, oppB opened_at=${oppB?.opened_at_ms}`)
 
   return r
 }

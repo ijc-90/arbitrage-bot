@@ -120,10 +120,17 @@ Tests get a dedicated temp folder (e.g. `logs/test_run_{timestamp}/`) and clean 
 
 ## Decisions Made
 
-- **SQLite** for structured storage (`better-sqlite3`, synchronous)
-- **JSONL kept in parallel** as flat audit log
-- **Tests** use a dedicated isolated logs folder, cleaned up after each run
-- **Web dashboard** for display — live status + historical table + stats
+- **SQLite** for structured storage (`better-sqlite3`, synchronous) ✅ implemented
+- **JSONL kept in parallel** as flat audit log ✅ implemented
+- **Tests** use a dedicated isolated logs folder (`logs/arb.db`), wiped by `clearLogs()` before each suite ✅ implemented
+- **Web dashboard** for display — live status + historical table + stats (next)
+
+## What's Built
+
+- `arbitrage-detector/db.ts` — `initDb()`, schema (opportunities, prices, ticks tables)
+- `arbitrage-detector/logger.ts` — writes to SQLite alongside JSONL; accepts optional `Db` in constructor
+- `arbitrage-detector/detector.ts` — accepts `--db <path>` arg; defaults to `logs/arb.db`
+- All integration tests migrated to SQLite queries (47/47 passing)
 
 ## Open Questions
 

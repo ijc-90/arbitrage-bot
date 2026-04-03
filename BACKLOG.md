@@ -35,12 +35,8 @@ Schema columns to add to `opportunities`: `open_resolution_ms INTEGER`, `close_r
 
 ---
 
-### Mock server bulk endpoints
-The mock server (`mock-exchanges/`) only implements per-symbol endpoints. For local end-to-end testing with `auto_pairs`, it needs:
-- `GET /binance/api/v3/ticker/bookTicker` (no symbol → all tickers for current scenario)
-- `GET /bybit/v5/market/tickers?category=spot` (no symbol → all tickers)
-
-Without these, `auto_pairs` mode can only be tested against real exchanges.
+### Remove mock server and scenario infrastructure
+Testing against real exchanges has proven faster and more reliable. The mock server (`mock-exchanges/`), scenario YAML files (`scenarios/`), `StepController` / `fastAdvance()` / `--steps` / `--advance-url` CLI flags, and integration test suites can all be deleted. The detector should become continuous-only (`ContinuousController`). Do not maintain backward compatibility with this infrastructure going forward.
 
 ---
 

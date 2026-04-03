@@ -101,6 +101,7 @@ function queryAllPairs(db: Database.Database): any[] {
   const unmonitored: any[] = []
   for (const [symbol, vols] of volMap.entries()) {
     if (vols.length < 2) continue  // single-exchange pair — no arb possible, don't show
+    if (vols[0].volume_24h_usdt < 1000) continue  // filter garbage pairs with < $1k volume
     if (!monitoredSymbols.has(symbol)) {
       unmonitored.push({
         symbol,

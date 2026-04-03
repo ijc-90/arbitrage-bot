@@ -84,6 +84,12 @@ async function main(): Promise<void> {
   const resolvedDbPath = dbPath ?? path.join(logsDir, 'arb.db')
   const db = initDb(resolvedDbPath)
 
+  // Close any opportunities left open from a previous run (detector restart lost in-memory state)
+  const now = Date.now()
+  db.prepare(
+    `UPDATE opportunities SET close_reason = 'ABANDONED', closed_at_ms = ?, duration_ms = ? - opened_at_ms WHERE close_reason IS NULL`
+  ).run(now, now)
+
   const client = new ExchangeClient(env)
   const logger = new Logger(logsDir, db)
   const tracker = new OpportunityTracker()
@@ -120,16 +126,26 @@ async function main(): Promise<void> {
 
         console.log(`[auto] ${qualifying.length} pairs qualifying (${candidates.length} in intersection, min_vol=${minVol})`)
 
+        // Phase 1: compute all spreads (pure CPU, no IO)
+        const spreads: Array<{ sym: string; spread: ReturnType<typeof computeSpread> }> = []
         for (const sym of qualifying) {
           const tickA = tickerMaps.get(firstEx)!.get(sym)!
           const tickB = tickerMaps.get(restExchanges[0])!.get(sym)!
-          const spread = computeSpread(firstEx, tickA, restExchanges[0], tickB, config)
-          logger.logPrice(sym, spread)
+          spreads.push({ sym, spread: computeSpread(firstEx, tickA, restExchanges[0], tickB, config) })
+        }
 
+        // Phase 2: log all prices in one transaction (365 inserts → single commit)
+        db.transaction(() => {
+          for (const { sym, spread } of spreads) {
+            logger.logPrice(sym, spread)
+          }
+        })()
+
+        // Phase 3: check for opportunities (outside transaction)
+        for (const { sym, spread } of spreads) {
           if (spread.isOpportunity && !tracker.hasOpenOpportunity()) {
             const opp = tracker.open(spread, sym, [firstEx, restExchanges[0]], client, config, logger, controller)
             logger.logOpportunityOpened(opp)
-            // no break — continue logging all remaining pairs this cycle
           }
         }
       } catch (err) {

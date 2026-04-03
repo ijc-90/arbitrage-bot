@@ -577,7 +577,7 @@ function buildHtml(): string {
   let showAllPairs   = false
   let pairsSort      = 'opps'
   let pairsSearch    = ''
-  const PAIRS_DEFAULT_LIMIT = 20
+  const PAIRS_DEFAULT_LIMIT = 8
   let pairsLimit     = PAIRS_DEFAULT_LIMIT
 
   // ── Pairs rendering ────────────────────────────────────────────────────────

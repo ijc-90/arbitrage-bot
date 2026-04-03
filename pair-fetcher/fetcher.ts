@@ -181,6 +181,7 @@ async function main(): Promise<void> {
   const exchangeUrls: Record<string, string> = {}
   if (process.env.BINANCE_URL) exchangeUrls.binance = process.env.BINANCE_URL
   if (process.env.BYBIT_URL)   exchangeUrls.bybit   = process.env.BYBIT_URL
+  if (process.env.BINGX_URL)   exchangeUrls.bingx   = process.env.BINGX_URL
 
   if (Object.keys(exchangeUrls).length === 0) {
     console.error('No exchange URLs found. Set BINANCE_URL and/or BYBIT_URL in .env')

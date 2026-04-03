@@ -69,7 +69,15 @@ export class OpportunityTracker {
     logger: Logger,
     controller: LoopController
   ): void {
-    client.getPairTicks(opp.pair, exchangeA, opp.pair, exchangeB)
+    const fetchWithRetry = (retries: number): Promise<[import('./exchangeClient').BookTick, import('./exchangeClient').BookTick]> =>
+      client.getPairTicks(opp.pair, exchangeA, opp.pair, exchangeB).catch(err => {
+        if (retries > 0 && err?.cause?.code === 'UND_ERR_SOCKET') {
+          return new Promise(r => setTimeout(r, 200)).then(() => fetchWithRetry(retries - 1))
+        }
+        throw err
+      })
+
+    fetchWithRetry(2)
       .then(([tickA, tickB]) => {
         const result = computeSpread(exchangeA, tickA, exchangeB, tickB, config)
         logger.logOpportunityTick(opp.id, result)

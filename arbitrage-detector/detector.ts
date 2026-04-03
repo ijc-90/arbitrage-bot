@@ -112,11 +112,15 @@ async function main(): Promise<void> {
           tickerMaps.set(ex, await client.getAllBookTickers(ex))
         }
 
-        // Intersection: symbols present on ALL configured exchanges
-        const [firstEx, ...restExchanges] = configuredExchanges
-        const candidates = [...tickerMaps.get(firstEx)!.keys()].filter(sym =>
-          restExchanges.every(ex => tickerMaps.get(ex)!.has(sym))
-        )
+        // Build symbol → exchanges map: only need 2+ exchanges to arb
+        const symbolExchanges = new Map<string, string[]>()
+        for (const [ex, tickers] of tickerMaps) {
+          for (const sym of tickers.keys()) {
+            if (!symbolExchanges.has(sym)) symbolExchanges.set(sym, [])
+            symbolExchanges.get(sym)!.push(ex)
+          }
+        }
+        const candidates = [...symbolExchanges.keys()].filter(sym => symbolExchanges.get(sym)!.length >= 2)
 
         // Volume filter from pair_snapshots (skipped if min_volume_usdt = 0)
         const minVol = config.auto_pairs.min_volume_usdt
@@ -124,7 +128,7 @@ async function main(): Promise<void> {
           ? candidates.filter(sym => meetsVolumeFloor(db, sym, minVol))
           : candidates
 
-        console.log(`[auto] ${qualifying.length} pairs qualifying (${candidates.length} in intersection, min_vol=${minVol})`)
+        console.log(`[auto] ${qualifying.length} pairs qualifying (${candidates.length} on 2+ exchanges, min_vol=${minVol})`)
 
         // Pre-load min exchange volume per pair for effective capital calculation
         // effective_capital = min(config.capital_per_trade_usdt, 0.1% of smaller exchange 24h volume)
@@ -141,31 +145,37 @@ async function main(): Promise<void> {
           for (const row of rows) minVolPerPair.set(row.symbol, row.min_vol)
         } catch {}
 
-        // Phase 1: compute all spreads (pure CPU, no IO)
+        // Phase 1: for each symbol, find best spread across all exchange pairs
         const spreads: Array<{ sym: string; spread: ReturnType<typeof computeSpread> }> = []
         for (const sym of qualifying) {
-          const tickA = tickerMaps.get(firstEx)!.get(sym)!
-          const tickB = tickerMaps.get(restExchanges[0])!.get(sym)!
-          // Skip pairs with zero or non-finite prices (suspended/delisted pairs return 0,
-          // which causes Infinity spread — SQLite stores Infinity/NaN as NULL)
-          if (
-            tickA.bidPrice <= 0 || tickA.askPrice <= 0 ||
-            tickB.bidPrice <= 0 || tickB.askPrice <= 0 ||
-            !isFinite(tickA.bidPrice) || !isFinite(tickA.askPrice) ||
-            !isFinite(tickB.bidPrice) || !isFinite(tickB.askPrice)
-          ) continue
-          // Cap capital at 0.1% of the smaller exchange's 24h volume
-          const minVol = minVolPerPair.get(sym)
-          const effectiveCapital = minVol != null
-            ? Math.min(config.capital_per_trade_usdt, minVol * 0.001)
+          const symExs = symbolExchanges.get(sym)!
+          const rawMinVol = minVolPerPair.get(sym)
+          const effectiveCapital = rawMinVol != null
+            ? Math.min(config.capital_per_trade_usdt, rawMinVol * 0.001)
             : config.capital_per_trade_usdt
-          const spread = computeSpread(firstEx, tickA, restExchanges[0], tickB, config, effectiveCapital)
-          // >100% spread = same ticker, different tokens across exchanges (symbol collision)
-          if (Math.abs(spread.netSpreadPct) > 100) continue
-          spreads.push({ sym, spread })
+
+          let best: ReturnType<typeof computeSpread> | null = null
+          for (let i = 0; i < symExs.length; i++) {
+            for (let j = i + 1; j < symExs.length; j++) {
+              const exA = symExs[i], exB = symExs[j]
+              const tickA = tickerMaps.get(exA)!.get(sym)!
+              const tickB = tickerMaps.get(exB)!.get(sym)!
+              // Skip zero or non-finite prices (suspended/delisted pairs)
+              if (
+                tickA.bidPrice <= 0 || tickA.askPrice <= 0 ||
+                tickB.bidPrice <= 0 || tickB.askPrice <= 0 ||
+                !isFinite(tickA.bidPrice) || !isFinite(tickA.askPrice) ||
+                !isFinite(tickB.bidPrice) || !isFinite(tickB.askPrice)
+              ) continue
+              const s = computeSpread(exA, tickA, exB, tickB, config, effectiveCapital)
+              if (Math.abs(s.netSpreadPct) > 100) continue  // symbol collision
+              if (!best || s.netSpreadPct > best.netSpreadPct) best = s
+            }
+          }
+          if (best) spreads.push({ sym, spread: best })
         }
 
-        // Phase 2: log all prices in one transaction (365 inserts → single commit)
+        // Phase 2: log all prices in one transaction (single commit)
         db.transaction(() => {
           for (const { sym, spread } of spreads) {
             logger.logPrice(sym, spread)
@@ -175,7 +185,7 @@ async function main(): Promise<void> {
         // Phase 3: check for opportunities (outside transaction)
         for (const { sym, spread } of spreads) {
           if (spread.isOpportunity && !tracker.hasOpenOpportunity()) {
-            const opp = tracker.open(spread, sym, [firstEx, restExchanges[0]], client, config, logger, controller)
+            const opp = tracker.open(spread, sym, [spread.exchangeBuy, spread.exchangeSell], client, config, logger, controller)
             logger.logOpportunityOpened(opp)
           }
         }

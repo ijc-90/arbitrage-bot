@@ -4,6 +4,7 @@ export type Db = InstanceType<typeof Database>
 
 export function initDb(dbPath: string): Db {
   const db = new Database(dbPath)
+  db.pragma('journal_mode = WAL')  // allows concurrent readers (dashboard) while detector writes
   db.exec(`
     CREATE TABLE IF NOT EXISTS opportunities (
       id TEXT PRIMARY KEY,

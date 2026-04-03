@@ -59,7 +59,7 @@ function parseArgs(argv: string[]): { configPath: string; steps: number | null; 
 function meetsVolumeFloor(db: Database, symbol: string, minVol: number): boolean {
   try {
     const row = db.prepare(
-      `SELECT MAX(volume_24h_usdt) AS max_vol FROM pair_snapshots WHERE symbol = ?`
+      `SELECT MAX(volume_24h_quote) AS max_vol FROM pair_snapshots WHERE symbol = ?`
     ).get(symbol) as { max_vol: number | null } | undefined
     if (!row || row.max_vol === null) return true  // no data yet — don't exclude
     return row.max_vol >= minVol
@@ -98,37 +98,41 @@ async function main(): Promise<void> {
     }
 
     if (config.auto_pairs) {
-      // Bulk fetch — 1 API call per exchange
-      const tickerMaps = new Map<string, Map<string, BookTick>>()
-      for (const ex of configuredExchanges) {
-        tickerMaps.set(ex, await client.getAllBookTickers(ex))
-      }
-
-      // Intersection: symbols present on ALL configured exchanges
-      const [firstEx, ...restExchanges] = configuredExchanges
-      const candidates = [...tickerMaps.get(firstEx)!.keys()].filter(sym =>
-        restExchanges.every(ex => tickerMaps.get(ex)!.has(sym))
-      )
-
-      // Volume filter from pair_snapshots (skipped if min_volume_usdt = 0)
-      const minVol = config.auto_pairs.min_volume_usdt
-      const qualifying = minVol > 0
-        ? candidates.filter(sym => meetsVolumeFloor(db, sym, minVol))
-        : candidates
-
-      console.log(`[auto] ${qualifying.length} pairs qualifying (${candidates.length} in intersection, min_vol=${minVol})`)
-
-      for (const sym of qualifying) {
-        const tickA = tickerMaps.get(firstEx)!.get(sym)!
-        const tickB = tickerMaps.get(restExchanges[0])!.get(sym)!
-        const spread = computeSpread(firstEx, tickA, restExchanges[0], tickB, config)
-        logger.logPrice(sym, spread)
-
-        if (spread.isOpportunity && !tracker.hasOpenOpportunity()) {
-          const opp = tracker.open(spread, sym, [firstEx, restExchanges[0]], client, config, logger, controller)
-          logger.logOpportunityOpened(opp)
-          break  // fast-path takes over; stop scanning this cycle
+      try {
+        // Bulk fetch — 1 API call per exchange
+        const tickerMaps = new Map<string, Map<string, BookTick>>()
+        for (const ex of configuredExchanges) {
+          tickerMaps.set(ex, await client.getAllBookTickers(ex))
         }
+
+        // Intersection: symbols present on ALL configured exchanges
+        const [firstEx, ...restExchanges] = configuredExchanges
+        const candidates = [...tickerMaps.get(firstEx)!.keys()].filter(sym =>
+          restExchanges.every(ex => tickerMaps.get(ex)!.has(sym))
+        )
+
+        // Volume filter from pair_snapshots (skipped if min_volume_usdt = 0)
+        const minVol = config.auto_pairs.min_volume_usdt
+        const qualifying = minVol > 0
+          ? candidates.filter(sym => meetsVolumeFloor(db, sym, minVol))
+          : candidates
+
+        console.log(`[auto] ${qualifying.length} pairs qualifying (${candidates.length} in intersection, min_vol=${minVol})`)
+
+        for (const sym of qualifying) {
+          const tickA = tickerMaps.get(firstEx)!.get(sym)!
+          const tickB = tickerMaps.get(restExchanges[0])!.get(sym)!
+          const spread = computeSpread(firstEx, tickA, restExchanges[0], tickB, config)
+          logger.logPrice(sym, spread)
+
+          if (spread.isOpportunity && !tracker.hasOpenOpportunity()) {
+            const opp = tracker.open(spread, sym, [firstEx, restExchanges[0]], client, config, logger, controller)
+            logger.logOpportunityOpened(opp)
+            break  // fast-path takes over; stop scanning this cycle
+          }
+        }
+      } catch (err) {
+        console.error('[auto] scan cycle error:', err)
       }
     } else {
       // Static mode: config.pairs list (used in test mode / explicit override)

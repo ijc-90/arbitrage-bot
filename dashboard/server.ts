@@ -100,6 +100,7 @@ function queryAllPairs(db: Database.Database): any[] {
 
   const unmonitored: any[] = []
   for (const [symbol, vols] of volMap.entries()) {
+    if (vols.length < 2) continue  // single-exchange pair — no arb possible, don't show
     if (!monitoredSymbols.has(symbol)) {
       unmonitored.push({
         symbol,
@@ -507,8 +508,8 @@ function buildHtml(): string {
 </div>
 
 <script>
-  const fmtPct  = v => (v >= 0 ? '+' : '') + v.toFixed(4) + '%'
-  const fmtUsdt = v => '$' + v.toFixed(4)
+  const fmtPct  = v => v == null ? '–' : (v >= 0 ? '+' : '') + v.toFixed(4) + '%'
+  const fmtUsdt = v => v == null ? '–' : '$' + v.toFixed(4)
   const fmtVol = v => {
     if (!v) return '–'
     if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B'
@@ -562,7 +563,7 @@ function buildHtml(): string {
   function sortPairs(pairs) {
     const copy = [...pairs]
     if (pairsSort === 'volume') copy.sort((a, b) => b.min_volume_usdt - a.min_volume_usdt || b.is_monitored - a.is_monitored)
-    else if (pairsSort === 'spread') copy.sort((a, b) => b.best_spread_pct - a.best_spread_pct || b.is_monitored - a.is_monitored)
+    else if (pairsSort === 'spread') copy.sort((a, b) => ((b.net_spread_pct ?? -Infinity) - (a.net_spread_pct ?? -Infinity)) || b.is_monitored - a.is_monitored)
     else if (pairsSort === 'pnl')    copy.sort((a, b) => b.total_pnl_usdt - a.total_pnl_usdt  || b.is_monitored - a.is_monitored)
     else copy.sort((a, b) => b.is_monitored - a.is_monitored || b.opp_count - a.opp_count || b.best_spread_pct - a.best_spread_pct)
     return copy
@@ -604,7 +605,14 @@ function buildHtml(): string {
   }
 
   function activePairs() {
-    return showAllPairs ? (allPairsData || currentData?.pairs || []) : (currentData?.pairs || [])
+    if (!showAllPairs) return currentData?.pairs || []
+    // In "Show all" mode: use fresh monitored pairs from live snapshot,
+    // merged with cached unmonitored pairs from /api/pairs.
+    // This prevents stale green-dot data when the detector stops writing.
+    const monitored = currentData?.pairs || []
+    const monitoredSymbols = new Set(monitored.map(p => p.symbol))
+    const unmonitored = (allPairsData || []).filter(p => !monitoredSymbols.has(p.symbol))
+    return [...monitored, ...unmonitored]
   }
 
   // ── Opportunities rendering ────────────────────────────────────────────────

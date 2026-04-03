@@ -1,5 +1,5 @@
 auto_pairs:
-  min_volume_usdt: 10000000   # 10M USDT 24h volume floor
+  min_volume_usdt: 100000   # 100k USDT 24h volume floor
 
 exchanges:
   binance:

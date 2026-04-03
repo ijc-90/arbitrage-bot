@@ -74,9 +74,10 @@ export class OpportunityTracker {
         const result = computeSpread(exchangeA, tickA, exchangeB, tickB, config)
         logger.logOpportunityTick(opp.id, result)
 
+        // Track peak spread for visibility but keep PnL at entry value —
+        // we entered at the opening price, the peak is unrealised upside
         if (result.netSpreadPct > opp.peakSpreadPct) {
           opp.peakSpreadPct = result.netSpreadPct
-          opp.estimatedPnlUsdt = result.estimatedPnlUsdt
         }
 
         // convergence check FIRST — before touching controller

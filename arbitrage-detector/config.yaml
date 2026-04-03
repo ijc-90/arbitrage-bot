@@ -8,6 +8,9 @@ exchanges:
   bybit:
     taker_fee_pct: 0.06
     slippage_estimate_pct: 0.04
+  bingx:
+    taker_fee_pct: 0.06
+    slippage_estimate_pct: 0.04
 
 capital_per_trade_usdt: 500
 entry_buffer_multiplier: 2.0

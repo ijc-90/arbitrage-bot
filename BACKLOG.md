@@ -49,6 +49,10 @@ Testing against real exchanges has proven faster and more reliable. The mock ser
 
 ## Design decisions on record
 
+- **`capital_per_trade_usdt`** (config.yaml, default 500) is the hard maximum capital per trade. The actual deployed capital is `min(capital_per_trade_usdt, 0.1% of smaller exchange 24h volume)` — operating above 0.1% of daily volume risks meaningful price impact. This is computed per pair per cycle from `pair_snapshots` and passed into `computeSpread`. If volume data is unavailable the configured max is used.
+- **Est. PnL is based on entry (opening) spread**, not peak. Peak spread is tracked separately (`peak_spread_pct`) but PnL reflects what you'd actually capture entering at the first observed price.
+- **BingX uses hyphenated symbols** (`BTC-USDT`). Normalised to `BTCUSDT` in both the detector (`exchangeClient.ts`) and pair-fetcher before storage. Conversion back to BingX format happens in `getBookTicker` via `toBingXSymbol`.
+
 - **JSONL kept in parallel** alongside SQLite as a flat audit log — human-readable, zero-dep recovery option
 - **Dashboard is read-only** — no controls exposed via the web UI
 - **Independent processes** — detector, dashboard, and mock-exchanges are three separate processes; dashboard reads SQLite directly, no IPC needed

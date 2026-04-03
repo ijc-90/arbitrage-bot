@@ -6,6 +6,21 @@ export interface BookTick {
   askPrice: number
 }
 
+// BingX uses hyphenated symbols (BTC-USDT). Convert to/from the canonical form (BTCUSDT).
+function toBingXSymbol(symbol: string): string {
+  const quotes = ['USDT', 'USDC', 'BUSD', 'BTC', 'ETH', 'BNB']
+  for (const q of quotes) {
+    if (symbol.endsWith(q) && symbol.length > q.length) {
+      return symbol.slice(0, -q.length) + '-' + q
+    }
+  }
+  return symbol
+}
+
+function fromBingXSymbol(symbol: string): string {
+  return symbol.replace('-', '')  // BTC-USDT → BTCUSDT
+}
+
 export class ExchangeClient {
   constructor(private env: Env) {}
 
@@ -38,6 +53,19 @@ export class ExchangeClient {
       }
     }
 
+    if (exchange === 'bingx') {
+      const url = `${baseUrl}/openApi/spot/v1/ticker/bookTicker?symbol=${toBingXSymbol(symbol)}`
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`BingX fetch failed: ${res.status}`)
+      const data = await res.json() as { code: number; data: { symbol: string; bidPrice: string; askPrice: string } }
+      if (data.code !== 0) throw new Error(`BingX error: ${data.code}`)
+      return {
+        symbol,
+        bidPrice: parseFloat(data.data.bidPrice),
+        askPrice: parseFloat(data.data.askPrice),
+      }
+    }
+
     throw new Error(`Unsupported exchange: ${exchange}`)
   }
 
@@ -63,6 +91,19 @@ export class ExchangeClient {
       const map = new Map<string, BookTick>()
       for (const item of data.result.list) {
         map.set(item.symbol, { symbol: item.symbol, bidPrice: parseFloat(item.bid1Price), askPrice: parseFloat(item.ask1Price) })
+      }
+      return map
+    }
+
+    if (exchange === 'bingx') {
+      const res = await fetch(`${baseUrl}/openApi/spot/v1/ticker/bookTicker`)
+      if (!res.ok) throw new Error(`BingX bulk fetch failed: ${res.status}`)
+      const data = await res.json() as { code: number; data: Array<{ symbol: string; bidPrice: string; askPrice: string }> }
+      if (data.code !== 0) throw new Error(`BingX error: ${data.code}`)
+      const map = new Map<string, BookTick>()
+      for (const item of data.data) {
+        const sym = fromBingXSymbol(item.symbol)  // BTC-USDT → BTCUSDT
+        map.set(sym, { symbol: sym, bidPrice: parseFloat(item.bidPrice), askPrice: parseFloat(item.askPrice) })
       }
       return map
     }

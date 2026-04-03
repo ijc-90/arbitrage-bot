@@ -126,6 +126,21 @@ async function main(): Promise<void> {
 
         console.log(`[auto] ${qualifying.length} pairs qualifying (${candidates.length} in intersection, min_vol=${minVol})`)
 
+        // Pre-load min exchange volume per pair for effective capital calculation
+        // effective_capital = min(config.capital_per_trade_usdt, 0.1% of smaller exchange 24h volume)
+        const minVolPerPair = new Map<string, number>()
+        try {
+          const rows = db.prepare(`
+            SELECT symbol, MIN(max_vol) AS min_vol FROM (
+              SELECT symbol, MAX(volume_24h_quote) AS max_vol
+              FROM pair_snapshots
+              WHERE id IN (SELECT MAX(id) FROM pair_snapshots GROUP BY exchange, symbol)
+              GROUP BY symbol, exchange
+            ) GROUP BY symbol
+          `).all() as Array<{ symbol: string; min_vol: number }>
+          for (const row of rows) minVolPerPair.set(row.symbol, row.min_vol)
+        } catch {}
+
         // Phase 1: compute all spreads (pure CPU, no IO)
         const spreads: Array<{ sym: string; spread: ReturnType<typeof computeSpread> }> = []
         for (const sym of qualifying) {
@@ -139,7 +154,12 @@ async function main(): Promise<void> {
             !isFinite(tickA.bidPrice) || !isFinite(tickA.askPrice) ||
             !isFinite(tickB.bidPrice) || !isFinite(tickB.askPrice)
           ) continue
-          const spread = computeSpread(firstEx, tickA, restExchanges[0], tickB, config)
+          // Cap capital at 0.1% of the smaller exchange's 24h volume
+          const minVol = minVolPerPair.get(sym)
+          const effectiveCapital = minVol != null
+            ? Math.min(config.capital_per_trade_usdt, minVol * 0.001)
+            : config.capital_per_trade_usdt
+          const spread = computeSpread(firstEx, tickA, restExchanges[0], tickB, config, effectiveCapital)
           // >100% spread = same ticker, different tokens across exchanges (symbol collision)
           if (Math.abs(spread.netSpreadPct) > 100) continue
           spreads.push({ sym, spread })

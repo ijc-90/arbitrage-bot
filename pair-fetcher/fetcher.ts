@@ -105,6 +105,31 @@ async function fetchBybitPairs(baseUrl: string): Promise<PairSnapshot[]> {
   }))
 }
 
+// BingX GET /openApi/spot/v1/ticker/24hr — returns all spot pairs with 24h volume
+// BingX uses hyphenated symbols (BTC-USDT); normalise to BTCUSDT for consistency.
+async function fetchBingXPairs(baseUrl: string): Promise<PairSnapshot[]> {
+  const res = await fetch(`${baseUrl}/openApi/spot/v1/ticker/24hr`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+
+  const data = await res.json() as {
+    code: number
+    data: Array<{
+      symbol: string      // e.g. "BTC-USDT"
+      volume: string      // base asset volume
+      quoteVolume: string // quote asset volume
+    }>
+  }
+
+  if (data.code !== 0) throw new Error(`BingX error code ${data.code}`)
+
+  return data.data.map(item => ({
+    exchange: 'bingx',
+    symbol: item.symbol.replace('-', ''),   // BTC-USDT → BTCUSDT
+    volume_24h_base: parseFloat(item.volume),
+    volume_24h_quote: parseFloat(item.quoteVolume),
+  }))
+}
+
 // ── Fetch loop ────────────────────────────────────────────────────────────────
 
 async function fetchAll(exchangeUrls: Record<string, string>, db: Database.Database): Promise<void> {
@@ -116,6 +141,7 @@ async function fetchAll(exchangeUrls: Record<string, string>, db: Database.Datab
   const fetchers: Record<string, (url: string) => Promise<PairSnapshot[]>> = {
     binance: fetchBinancePairs,
     bybit:   fetchBybitPairs,
+    bingx:   fetchBingXPairs,
   }
 
   for (const [exchange, url] of Object.entries(exchangeUrls)) {

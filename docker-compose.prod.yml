@@ -1,0 +1,29 @@
+services:
+  detector:
+    build: ./arbitrage-detector
+    env_file: .env.prod
+    volumes:
+      - arb-data:/app/logs
+    restart: unless-stopped
+
+  pair-fetcher:
+    build: ./pair-fetcher
+    env_file: .env.prod
+    volumes:
+      - arb-data:/app/logs
+    restart: unless-stopped
+    depends_on:
+      - detector
+
+  dashboard:
+    build: ./dashboard
+    volumes:
+      - arb-data:/app/logs
+    ports:
+      - "4000:4000"
+    restart: unless-stopped
+    depends_on:
+      - detector
+
+volumes:
+  arb-data:

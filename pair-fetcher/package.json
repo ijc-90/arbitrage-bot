@@ -1,0 +1,17 @@
+{
+  "name": "arb-pair-fetcher",
+  "version": "0.1.0",
+  "scripts": {
+    "start": "npx ts-node fetcher.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.8.0",
+    "dotenv": "^16.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.0.0",
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.3.0"
+  }
+}

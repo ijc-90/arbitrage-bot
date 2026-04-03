@@ -139,7 +139,10 @@ async function main(): Promise<void> {
             !isFinite(tickA.bidPrice) || !isFinite(tickA.askPrice) ||
             !isFinite(tickB.bidPrice) || !isFinite(tickB.askPrice)
           ) continue
-          spreads.push({ sym, spread: computeSpread(firstEx, tickA, restExchanges[0], tickB, config) })
+          const spread = computeSpread(firstEx, tickA, restExchanges[0], tickB, config)
+          // >100% spread = same ticker, different tokens across exchanges (symbol collision)
+          if (Math.abs(spread.netSpreadPct) > 100) continue
+          spreads.push({ sym, spread })
         }
 
         // Phase 2: log all prices in one transaction (365 inserts → single commit)

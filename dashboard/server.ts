@@ -32,21 +32,39 @@ function hasPairSnapshots(db: Database.Database): boolean {
 }
 
 // Load per-exchange volumes from pair_snapshots, sorted smallest-first per symbol.
+// Converts BTC-quoted pairs to USDT equivalent using latest BTCUSDT price from prices table.
 // Returns null if pair_snapshots doesn't exist or is empty.
 function loadVolumes(db: Database.Database): Map<string, { exchange: string; volume_24h_usdt: number }[]> | null {
   if (!hasPairSnapshots(db)) return null
   const rows = db.prepare(`
-    SELECT symbol, exchange, volume_24h_quote AS volume_24h_usdt
+    SELECT symbol, exchange, volume_24h_quote AS volume_raw
     FROM pair_snapshots
     WHERE id IN (SELECT MAX(id) FROM pair_snapshots GROUP BY exchange, symbol)
-  `).all() as any[]
+  `).all() as Array<{ symbol: string; exchange: string; volume_raw: number }>
 
   if (rows.length === 0) return null
 
+  // Fetch BTC/USDT mid price to convert *BTC pair volumes to USDT equivalent
+  let btcUsdt = 0
+  try {
+    const r = db.prepare(
+      `SELECT (ask_buy + bid_sell) / 2.0 AS mid FROM prices WHERE pair = 'BTCUSDT' ORDER BY fetched_at_ms DESC LIMIT 1`
+    ).get() as { mid: number } | undefined
+    if (r?.mid && isFinite(r.mid) && r.mid > 0) btcUsdt = r.mid
+  } catch {}
+
   const map = new Map<string, { exchange: string; volume_24h_usdt: number }[]>()
   for (const row of rows) {
+    let vol: number
+    if (row.symbol.endsWith('USDT')) {
+      vol = row.volume_raw
+    } else if (row.symbol.endsWith('BTC')) {
+      vol = row.volume_raw * btcUsdt  // 0 when BTC price not yet available → filtered by $1k floor
+    } else {
+      continue  // ETH/BNB/etc quote currencies not yet supported
+    }
     if (!map.has(row.symbol)) map.set(row.symbol, [])
-    map.get(row.symbol)!.push({ exchange: row.exchange, volume_24h_usdt: row.volume_24h_usdt })
+    map.get(row.symbol)!.push({ exchange: row.exchange, volume_24h_usdt: vol })
   }
   for (const vols of map.values()) {
     vols.sort((a, b) => a.volume_24h_usdt - b.volume_24h_usdt) // smallest first
@@ -101,7 +119,7 @@ function queryAllPairs(db: Database.Database): any[] {
   const unmonitored: any[] = []
   for (const [symbol, vols] of volMap.entries()) {
     if (vols.length < 2) continue  // single-exchange pair — no arb possible, don't show
-    if (vols[0].volume_24h_usdt < 1000) continue  // filter garbage pairs with < $1k volume
+    if (vols[0].volume_24h_usdt < 1000) continue  // filter garbage / unresolved-price pairs
     if (!monitoredSymbols.has(symbol)) {
       unmonitored.push({
         symbol,

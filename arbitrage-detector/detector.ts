@@ -131,6 +131,14 @@ async function main(): Promise<void> {
         for (const sym of qualifying) {
           const tickA = tickerMaps.get(firstEx)!.get(sym)!
           const tickB = tickerMaps.get(restExchanges[0])!.get(sym)!
+          // Skip pairs with zero or non-finite prices (suspended/delisted pairs return 0,
+          // which causes Infinity spread — SQLite stores Infinity/NaN as NULL)
+          if (
+            tickA.bidPrice <= 0 || tickA.askPrice <= 0 ||
+            tickB.bidPrice <= 0 || tickB.askPrice <= 0 ||
+            !isFinite(tickA.bidPrice) || !isFinite(tickA.askPrice) ||
+            !isFinite(tickB.bidPrice) || !isFinite(tickB.askPrice)
+          ) continue
           spreads.push({ sym, spread: computeSpread(firstEx, tickA, restExchanges[0], tickB, config) })
         }
 

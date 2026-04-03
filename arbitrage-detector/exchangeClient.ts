@@ -1,4 +1,5 @@
 import { Env } from './config'
+import type { Db } from './db'
 
 export interface BookTick {
   symbol: string
@@ -16,10 +17,57 @@ function fromBingXSymbol(symbol: string): string {
 export class ExchangeClient {
   // Populated by getAllBookTickers('bingx'). Maps canonical symbol → original BingX symbol.
   private bingxSymbolMap = new Map<string, string>()
-  // Symbols that returned 100204 on individual lookup — excluded from future bulk results.
+  // Symbols that returned 100204 on individual lookup — persisted to DB to survive restarts.
   private bingxBlacklist = new Set<string>()
+  // Cached set of tradeable BingX symbols (BingX hyphenated format). Refreshed hourly.
+  private bingxActiveSymbols: Set<string> | null = null
+  private bingxActiveSymbolsFetchedAt = 0
 
-  constructor(private env: Env) {}
+  constructor(private env: Env, private db?: Db) {
+    if (db) {
+      // Load persisted blacklist on startup
+      try {
+        const rows = db.prepare(
+          `SELECT symbol FROM exchange_symbol_blacklist WHERE exchange = 'bingx'`
+        ).all() as Array<{ symbol: string }>
+        for (const row of rows) this.bingxBlacklist.add(row.symbol)
+        if (this.bingxBlacklist.size > 0) {
+          console.log(`[bingx] loaded ${this.bingxBlacklist.size} blacklisted symbols from DB`)
+        }
+      } catch {}
+    }
+  }
+
+  private async fetchActiveBingXSymbols(baseUrl: string): Promise<Set<string>> {
+    const ONE_HOUR_MS = 60 * 60 * 1000
+    if (this.bingxActiveSymbols && Date.now() - this.bingxActiveSymbolsFetchedAt < ONE_HOUR_MS) {
+      return this.bingxActiveSymbols
+    }
+    const res = await fetch(`${baseUrl}/openApi/spot/v1/common/symbols`)
+    if (!res.ok) throw new Error(`BingX symbols fetch failed: ${res.status}`)
+    const data = await res.json() as {
+      code: number
+      data: { symbols: Array<{ symbol: string; status: number; apiStateBuy: boolean; apiStateSell: boolean }> }
+    }
+    if (data.code !== 0) throw new Error(`BingX symbols error: ${data.code}`)
+    const active = new Set<string>()
+    for (const s of data.data.symbols) {
+      if (s.status === 1 && s.apiStateBuy && s.apiStateSell) active.add(s.symbol)
+    }
+    this.bingxActiveSymbols = active
+    this.bingxActiveSymbolsFetchedAt = Date.now()
+    console.log(`[bingx] ${active.size} active spot symbols (refreshed)`)
+    return active
+  }
+
+  private persistBlacklist(symbol: string): void {
+    if (!this.db) return
+    try {
+      this.db.prepare(
+        `INSERT OR IGNORE INTO exchange_symbol_blacklist (exchange, symbol, reason, created_at_ms) VALUES ('bingx', ?, '100204', ?)`
+      ).run(symbol, Date.now())
+    } catch {}
+  }
 
   async getBookTicker(exchange: string, symbol: string): Promise<BookTick> {
     const baseUrl = this.env.exchangeUrls[exchange]
@@ -60,6 +108,7 @@ export class ExchangeClient {
       if (data.code !== 0) {
         if (data.code === 100204) {
           this.bingxBlacklist.add(symbol)
+          this.persistBlacklist(symbol)
           console.warn(`[bingx] blacklisted ${symbol} (100204 — not available for individual lookup)`)
         }
         throw new Error(`BingX error: ${data.code}`)
@@ -101,6 +150,10 @@ export class ExchangeClient {
     }
 
     if (exchange === 'bingx') {
+      // Fetch active symbols first (cached hourly) — filters out suspended/delisted pairs
+      // that appear in the bulk ticker but fail individual queries with 100204.
+      const activeSymbols = await this.fetchActiveBingXSymbols(baseUrl)
+
       const res = await fetch(`${baseUrl}/openApi/spot/v1/ticker/bookTicker`)
       if (!res.ok) throw new Error(`BingX bulk fetch failed: ${res.status}`)
       const data = await res.json() as { code: number; data: Array<{ symbol: string; bidPrice: string; askPrice: string }> }
@@ -110,8 +163,9 @@ export class ExchangeClient {
       const newSymbolMap = new Map<string, string>()
       const map = new Map<string, BookTick>()
       for (const item of data.data) {
+        if (!activeSymbols.has(item.symbol)) continue  // suspended or delisted — skip
         const sym = fromBingXSymbol(item.symbol)  // BTC-USDT → BTCUSDT
-        if (this.bingxBlacklist.has(sym)) continue  // skip pairs that fail individual lookup
+        if (this.bingxBlacklist.has(sym)) continue  // failsafe: already known bad
         newSymbolMap.set(sym, item.symbol)
         map.set(sym, { symbol: sym, bidPrice: parseFloat(item.bidPrice), askPrice: parseFloat(item.askPrice) })
       }

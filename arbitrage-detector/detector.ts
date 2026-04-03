@@ -90,7 +90,7 @@ async function main(): Promise<void> {
     `UPDATE opportunities SET close_reason = 'ABANDONED', closed_at_ms = ?, duration_ms = ? - opened_at_ms WHERE close_reason IS NULL`
   ).run(now, now)
 
-  const client = new ExchangeClient(env)
+  const client = new ExchangeClient(env, db)
   const logger = new Logger(logsDir, db)
   const tracker = new OpportunityTracker()
 
@@ -130,34 +130,44 @@ async function main(): Promise<void> {
 
         console.log(`[auto] ${qualifying.length} pairs qualifying (${candidates.length} on 2+ exchanges, min_vol=${minVol})`)
 
-        // Pre-load min exchange volume per pair for effective capital calculation
+        // Pre-load volume per (symbol, exchange) for capital sizing and completeness checks.
         // effective_capital = min(config.capital_per_trade_usdt, 0.1% of smaller exchange 24h volume)
-        const minVolPerPair = new Map<string, number>()
+        // We require BOTH exchanges to have volume data before logging or opening an opportunity.
+        // If pair_snapshots is empty (pair-fetcher hasn't run yet), volPerExchange is empty
+        // and the "both exchanges must have data" check is skipped (graceful startup).
+        const volPerExchange = new Map<string, Map<string, number>>()  // symbol → exchange → vol
+        const hasPairSnapshots = volPerExchange.size === 0  // re-evaluated below
         try {
           const rows = db.prepare(`
-            SELECT symbol, MIN(max_vol) AS min_vol FROM (
-              SELECT symbol, MAX(volume_24h_quote) AS max_vol
-              FROM pair_snapshots
-              WHERE id IN (SELECT MAX(id) FROM pair_snapshots GROUP BY exchange, symbol)
-              GROUP BY symbol, exchange
-            ) GROUP BY symbol
-          `).all() as Array<{ symbol: string; min_vol: number }>
-          for (const row of rows) minVolPerPair.set(row.symbol, row.min_vol)
+            SELECT symbol, exchange, MAX(volume_24h_quote) AS max_vol
+            FROM pair_snapshots
+            WHERE id IN (SELECT MAX(id) FROM pair_snapshots GROUP BY exchange, symbol)
+            GROUP BY symbol, exchange
+          `).all() as Array<{ symbol: string; exchange: string; max_vol: number }>
+          for (const row of rows) {
+            if (!volPerExchange.has(row.symbol)) volPerExchange.set(row.symbol, new Map())
+            volPerExchange.get(row.symbol)!.set(row.exchange, row.max_vol)
+          }
         } catch {}
+        const volumeDataAvailable = volPerExchange.size > 0
 
         // Phase 1: for each symbol, find best spread across all exchange pairs
         const spreads: Array<{ sym: string; spread: ReturnType<typeof computeSpread> }> = []
         for (const sym of qualifying) {
           const symExs = symbolExchanges.get(sym)!
-          const rawMinVol = minVolPerPair.get(sym)
-          const effectiveCapital = rawMinVol != null
-            ? Math.min(config.capital_per_trade_usdt, rawMinVol * 0.001)
-            : config.capital_per_trade_usdt
 
           let best: ReturnType<typeof computeSpread> | null = null
           for (let i = 0; i < symExs.length; i++) {
             for (let j = i + 1; j < symExs.length; j++) {
               const exA = symExs[i], exB = symExs[j]
+
+              // Require both exchanges to have volume data (when data is available at all).
+              // This ensures every displayed opportunity has two volume numbers.
+              if (volumeDataAvailable) {
+                const symVols = volPerExchange.get(sym)
+                if (!symVols?.has(exA) || !symVols?.has(exB)) continue
+              }
+
               const tickA = tickerMaps.get(exA)!.get(sym)!
               const tickB = tickerMaps.get(exB)!.get(sym)!
               // Skip zero or non-finite prices (suspended/delisted pairs)
@@ -167,6 +177,15 @@ async function main(): Promise<void> {
                 !isFinite(tickA.bidPrice) || !isFinite(tickA.askPrice) ||
                 !isFinite(tickB.bidPrice) || !isFinite(tickB.askPrice)
               ) continue
+
+              // Effective capital = min(configured max, 0.1% of smaller exchange's volume)
+              const symVols = volPerExchange.get(sym)
+              const volA = symVols?.get(exA)
+              const volB = symVols?.get(exB)
+              const effectiveCapital = (volA != null && volB != null)
+                ? Math.min(config.capital_per_trade_usdt, Math.min(volA, volB) * 0.001)
+                : config.capital_per_trade_usdt
+
               const s = computeSpread(exA, tickA, exB, tickB, config, effectiveCapital)
               if (Math.abs(s.netSpreadPct) > 100) continue  // symbol collision
               if (!best || s.netSpreadPct > best.netSpreadPct) best = s

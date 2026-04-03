@@ -108,7 +108,7 @@ async function fetchBybitPairs(baseUrl: string): Promise<PairSnapshot[]> {
 // BingX GET /openApi/spot/v1/ticker/24hr — returns all spot pairs with 24h volume
 // BingX uses hyphenated symbols (BTC-USDT); normalise to BTCUSDT for consistency.
 async function fetchBingXPairs(baseUrl: string): Promise<PairSnapshot[]> {
-  const res = await fetch(`${baseUrl}/openApi/spot/v1/ticker/24hr`)
+  const res = await fetch(`${baseUrl}/openApi/spot/v1/ticker/24hr?timestamp=${Date.now()}`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
   const data = await res.json() as {

@@ -79,6 +79,17 @@ export class OpportunityTracker {
 
     fetchWithRetry(2)
       .then(([tickA, tickB]) => {
+        // Guard against transient bad prices (NaN/zero) — skip this tick rather than
+        // writing invalid data to DB or closing a valid opportunity on a one-off glitch.
+        if (
+          !isFinite(tickA.bidPrice) || tickA.bidPrice <= 0 ||
+          !isFinite(tickA.askPrice) || tickA.askPrice <= 0 ||
+          !isFinite(tickB.bidPrice) || tickB.bidPrice <= 0 ||
+          !isFinite(tickB.askPrice) || tickB.askPrice <= 0
+        ) {
+          setTimeout(() => this.poll(opp, exchangeA, exchangeB, client, config, logger, controller), config.fast_poll_interval_ms)
+          return
+        }
         const result = computeSpread(exchangeA, tickA, exchangeB, tickB, config)
         logger.logOpportunityTick(opp.id, result)
 

@@ -104,7 +104,8 @@ export class ExchangeClient {
       const url = `${baseUrl}/openApi/spot/v1/ticker/bookTicker?symbol=${bingxSym}`
       const res = await fetch(url)
       if (!res.ok) throw new Error(`BingX fetch failed: ${res.status}`)
-      const data = await res.json() as { code: number; data: { symbol: string; bidPrice: string; askPrice: string } }
+      // Individual endpoint returns data as an array, not an object
+      const data = await res.json() as { code: number; data: Array<{ symbol: string; bidPrice: string; askPrice: string }> }
       if (data.code !== 0) {
         if (data.code === 100204) {
           this.bingxBlacklist.add(symbol)
@@ -113,10 +114,12 @@ export class ExchangeClient {
         }
         throw new Error(`BingX error: ${data.code}`)
       }
+      const item = data.data[0]
+      if (!item) throw new Error(`BingX empty response for ${bingxSym}`)
       return {
         symbol,
-        bidPrice: parseFloat(data.data.bidPrice),
-        askPrice: parseFloat(data.data.askPrice),
+        bidPrice: parseFloat(item.bidPrice),
+        askPrice: parseFloat(item.askPrice),
       }
     }
 

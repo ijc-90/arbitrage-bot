@@ -112,6 +112,10 @@ async function main(): Promise<void> {
           tickerMaps.set(ex, await client.getAllBookTickers(ex))
         }
 
+        // Log per-exchange ticker counts for diagnostics
+        const fetchSummary = configuredExchanges.map(ex => `${ex}:${tickerMaps.get(ex)!.size}`).join(' ')
+        console.log(`[fetch] ${fetchSummary}`)
+
         // Build symbol → exchanges map: only need 2+ exchanges to arb
         const symbolExchanges = new Map<string, string[]>()
         for (const [ex, tickers] of tickerMaps) {
@@ -149,7 +153,13 @@ async function main(): Promise<void> {
             volPerExchange.get(row.symbol)!.set(row.exchange, row.max_vol)
           }
         } catch {}
-        const volumeDataAvailable = volPerExchange.size > 0
+
+        // Track which exchanges have ANY volume data — we only require it for those.
+        // If pair-fetcher hasn't run for bingx yet, bingx rows are absent and we don't penalise bingx pairs.
+        const exchangesWithVolumeData = new Set<string>()
+        for (const exMap of volPerExchange.values()) {
+          for (const ex of exMap.keys()) exchangesWithVolumeData.add(ex)
+        }
 
         // Phase 1: for each symbol, find best spread across all exchange pairs
         const spreads: Array<{ sym: string; spread: ReturnType<typeof computeSpread> }> = []
@@ -161,11 +171,13 @@ async function main(): Promise<void> {
             for (let j = i + 1; j < symExs.length; j++) {
               const exA = symExs[i], exB = symExs[j]
 
-              // Require both exchanges to have volume data (when data is available at all).
-              // This ensures every displayed opportunity has two volume numbers.
-              if (volumeDataAvailable) {
+              // Require volume data only for exchanges that have it in pair_snapshots.
+              // Exchanges not yet fetched by pair-fetcher are not excluded.
+              if (exchangesWithVolumeData.size > 0) {
                 const symVols = volPerExchange.get(sym)
-                if (!symVols?.has(exA) || !symVols?.has(exB)) continue
+                const missingA = exchangesWithVolumeData.has(exA) && !symVols?.has(exA)
+                const missingB = exchangesWithVolumeData.has(exB) && !symVols?.has(exB)
+                if (missingA || missingB) continue
               }
 
               const tickA = tickerMaps.get(exA)!.get(sym)!

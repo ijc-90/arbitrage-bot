@@ -31,36 +31,39 @@ function hasPairSnapshots(db: Database.Database): boolean {
   return !!row
 }
 
-// Monitored pairs with opp stats + optional volume enrichment (fast path for snapshot)
-function queryMonitoredPairs(db: Database.Database) {
-  const withVol = hasPairSnapshots(db)
-  if (withVol) {
-    return db.prepare(`
-      WITH latest_vol AS (
-        SELECT symbol, SUM(volume_24h_quote) AS volume_24h_usdt
-        FROM pair_snapshots
-        WHERE id IN (SELECT MAX(id) FROM pair_snapshots GROUP BY exchange, symbol)
-        GROUP BY symbol
-      )
-      SELECT
-        p.pair                                 AS symbol,
-        1                                      AS is_monitored,
-        p.exchange_buy,
-        p.exchange_sell,
-        p.net_spread_pct,
-        p.fetched_at_ms,
-        COUNT(o.id)                            AS opp_count,
-        COALESCE(MAX(o.peak_spread_pct), 0)    AS best_spread_pct,
-        COALESCE(SUM(o.estimated_pnl_usdt), 0) AS total_pnl_usdt,
-        COALESCE(lv.volume_24h_usdt, 0)        AS volume_24h_usdt
-      FROM prices p
-      LEFT JOIN opportunities o ON o.pair = p.pair AND o.close_reason IS NOT NULL
-      LEFT JOIN latest_vol lv ON lv.symbol = p.pair
-      WHERE p.id IN (SELECT MAX(id) FROM prices GROUP BY pair)
-      GROUP BY p.pair
-      ORDER BY opp_count DESC, best_spread_pct DESC
-    `).all()
+// Load per-exchange volumes from pair_snapshots, sorted smallest-first per symbol.
+// Returns null if pair_snapshots doesn't exist or is empty.
+function loadVolumes(db: Database.Database): Map<string, { exchange: string; volume_24h_usdt: number }[]> | null {
+  if (!hasPairSnapshots(db)) return null
+  const rows = db.prepare(`
+    SELECT symbol, exchange, volume_24h_quote AS volume_24h_usdt
+    FROM pair_snapshots
+    WHERE id IN (SELECT MAX(id) FROM pair_snapshots GROUP BY exchange, symbol)
+  `).all() as any[]
+
+  if (rows.length === 0) return null
+
+  const map = new Map<string, { exchange: string; volume_24h_usdt: number }[]>()
+  for (const row of rows) {
+    if (!map.has(row.symbol)) map.set(row.symbol, [])
+    map.get(row.symbol)!.push({ exchange: row.exchange, volume_24h_usdt: row.volume_24h_usdt })
   }
+  for (const vols of map.values()) {
+    vols.sort((a, b) => a.volume_24h_usdt - b.volume_24h_usdt) // smallest first
+  }
+  return map
+}
+
+// Attach volumes[] and min_volume_usdt to each pair row in-place.
+function applyVolumes(pairs: any[], volMap: Map<string, any[]> | null): void {
+  for (const p of pairs) {
+    const vols = volMap?.get(p.symbol) ?? []
+    p.volumes = vols
+    p.min_volume_usdt = vols.length > 0 ? vols[0].volume_24h_usdt : 0
+  }
+}
+
+function queryMonitoredPairsBase(db: Database.Database): any[] {
   return db.prepare(`
     SELECT
       p.pair                                 AS symbol,
@@ -71,65 +74,51 @@ function queryMonitoredPairs(db: Database.Database) {
       p.fetched_at_ms,
       COUNT(o.id)                            AS opp_count,
       COALESCE(MAX(o.peak_spread_pct), 0)    AS best_spread_pct,
-      COALESCE(SUM(o.estimated_pnl_usdt), 0) AS total_pnl_usdt,
-      0                                      AS volume_24h_usdt
+      COALESCE(SUM(o.estimated_pnl_usdt), 0) AS total_pnl_usdt
     FROM prices p
     LEFT JOIN opportunities o ON o.pair = p.pair AND o.close_reason IS NOT NULL
     WHERE p.id IN (SELECT MAX(id) FROM prices GROUP BY pair)
     GROUP BY p.pair
     ORDER BY opp_count DESC, best_spread_pct DESC
-  `).all()
+  `).all() as any[]
 }
 
-// All pairs from pair_snapshots + monitored enrichment (slow path for /api/pairs)
-function queryAllPairs(db: Database.Database) {
-  if (!hasPairSnapshots(db)) return queryMonitoredPairs(db)
+function queryMonitoredPairs(db: Database.Database): any[] {
+  const pairs = queryMonitoredPairsBase(db)
+  applyVolumes(pairs, loadVolumes(db))
+  return pairs
+}
 
-  return db.prepare(`
-    WITH latest_vol AS (
-      SELECT symbol, SUM(volume_24h_quote) AS volume_24h_usdt
-      FROM pair_snapshots
-      WHERE id IN (SELECT MAX(id) FROM pair_snapshots GROUP BY exchange, symbol)
-      GROUP BY symbol
-    ),
-    monitored AS (
-      SELECT
-        p.pair                                 AS symbol,
-        p.exchange_buy,
-        p.exchange_sell,
-        p.net_spread_pct,
-        p.fetched_at_ms,
-        COUNT(o.id)                            AS opp_count,
-        COALESCE(MAX(o.peak_spread_pct), 0)    AS best_spread_pct,
-        COALESCE(SUM(o.estimated_pnl_usdt), 0) AS total_pnl_usdt
-      FROM prices p
-      LEFT JOIN opportunities o ON o.pair = p.pair AND o.close_reason IS NOT NULL
-      WHERE p.id IN (SELECT MAX(id) FROM prices GROUP BY pair)
-      GROUP BY p.pair
-    )
-    SELECT
-      lv.symbol,
-      COALESCE(lv.volume_24h_usdt, 0)        AS volume_24h_usdt,
-      CASE WHEN m.symbol IS NOT NULL THEN 1 ELSE 0 END AS is_monitored,
-      m.exchange_buy,
-      m.exchange_sell,
-      m.net_spread_pct,
-      m.fetched_at_ms,
-      COALESCE(m.opp_count, 0)               AS opp_count,
-      COALESCE(m.best_spread_pct, 0)         AS best_spread_pct,
-      COALESCE(m.total_pnl_usdt, 0)          AS total_pnl_usdt
-    FROM latest_vol lv
-    LEFT JOIN monitored m ON m.symbol = lv.symbol
-    UNION ALL
-    SELECT
-      m.symbol, 0, 1,
-      m.exchange_buy, m.exchange_sell,
-      m.net_spread_pct, m.fetched_at_ms,
-      m.opp_count, m.best_spread_pct, m.total_pnl_usdt
-    FROM monitored m
-    WHERE m.symbol NOT IN (SELECT symbol FROM latest_vol)
-    ORDER BY is_monitored DESC, volume_24h_usdt DESC
-  `).all()
+function queryAllPairs(db: Database.Database): any[] {
+  const monitored = queryMonitoredPairsBase(db)
+  const volMap = loadVolumes(db)
+  applyVolumes(monitored, volMap)
+
+  if (!volMap) return monitored
+
+  const monitoredSymbols = new Set<string>(monitored.map((p: any) => p.symbol))
+
+  const unmonitored: any[] = []
+  for (const [symbol, vols] of volMap.entries()) {
+    if (!monitoredSymbols.has(symbol)) {
+      unmonitored.push({
+        symbol,
+        is_monitored: 0,
+        exchange_buy: null,
+        exchange_sell: null,
+        net_spread_pct: null,
+        fetched_at_ms: null,
+        opp_count: 0,
+        best_spread_pct: 0,
+        total_pnl_usdt: 0,
+        volumes: vols,
+        min_volume_usdt: vols[0].volume_24h_usdt,
+      })
+    }
+  }
+
+  unmonitored.sort((a, b) => b.min_volume_usdt - a.min_volume_usdt)
+  return [...monitored, ...unmonitored]
 }
 
 function querySnapshot(dbPath: string) {
@@ -520,12 +509,18 @@ function buildHtml(): string {
 <script>
   const fmtPct  = v => (v >= 0 ? '+' : '') + v.toFixed(4) + '%'
   const fmtUsdt = v => '$' + v.toFixed(4)
-  const fmtVol  = v => {
+  const fmtVol = v => {
     if (!v) return '–'
     if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B'
     if (v >= 1e6) return '$' + (v / 1e6).toFixed(1) + 'M'
     if (v >= 1e3) return '$' + (v / 1e3).toFixed(0) + 'K'
     return '$' + v.toFixed(0)
+  }
+  // volumes already sorted smallest-first by server
+  const fmtVolumes = vols => {
+    if (!vols || vols.length === 0) return '–'
+    if (vols.length === 1) return fmtVol(vols[0].volume_24h_usdt)
+    return fmtVol(vols[0].volume_24h_usdt) + ' / ' + fmtVol(vols[1].volume_24h_usdt)
   }
   const fmtDur = ms => {
     if (ms == null) return '–'
@@ -566,7 +561,7 @@ function buildHtml(): string {
   // ── Pairs rendering ────────────────────────────────────────────────────────
   function sortPairs(pairs) {
     const copy = [...pairs]
-    if (pairsSort === 'volume') copy.sort((a, b) => b.volume_24h_usdt - a.volume_24h_usdt || b.is_monitored - a.is_monitored)
+    if (pairsSort === 'volume') copy.sort((a, b) => b.min_volume_usdt - a.min_volume_usdt || b.is_monitored - a.is_monitored)
     else if (pairsSort === 'spread') copy.sort((a, b) => b.best_spread_pct - a.best_spread_pct || b.is_monitored - a.is_monitored)
     else if (pairsSort === 'pnl')    copy.sort((a, b) => b.total_pnl_usdt - a.total_pnl_usdt  || b.is_monitored - a.is_monitored)
     else copy.sort((a, b) => b.is_monitored - a.is_monitored || b.opp_count - a.opp_count || b.best_spread_pct - a.best_spread_pct)
@@ -602,7 +597,7 @@ function buildHtml(): string {
         <td style="color:var(--blue)">\${p.opp_count || '–'}</td>
         <td>\${bestSpread}</td>
         <td>\${pnl}</td>
-        <td>\${fmtVol(p.volume_24h_usdt)}</td>
+        <td>\${fmtVolumes(p.volumes)}</td>
         <td style="color:var(--dim)">\${seen}</td>
       </tr>\`
     }).join('')
@@ -866,7 +861,7 @@ app.get('/api/pairs', (req, res) => {
     const q    = typeof req.query.q    === 'string' ? req.query.q.toUpperCase()    : ''
     const sort = typeof req.query.sort === 'string' ? req.query.sort : ''
     if (q) rows = rows.filter((r: any) => r.symbol.includes(q))
-    if (sort === 'volume') rows.sort((a: any, b: any) => b.volume_24h_usdt - a.volume_24h_usdt)
+    if (sort === 'volume') rows.sort((a: any, b: any) => b.min_volume_usdt - a.min_volume_usdt)
     else if (sort === 'spread') rows.sort((a: any, b: any) => b.best_spread_pct - a.best_spread_pct)
     else if (sort === 'pnl')    rows.sort((a: any, b: any) => b.total_pnl_usdt - a.total_pnl_usdt)
     else if (sort === 'opps')   rows.sort((a: any, b: any) => b.opp_count - a.opp_count)

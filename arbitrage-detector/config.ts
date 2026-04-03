@@ -13,8 +13,13 @@ export interface PairConfig {
   exchanges: [string, string]
 }
 
+export interface AutoPairsConfig {
+  min_volume_usdt: number
+}
+
 export interface Config {
-  pairs: PairConfig[]
+  pairs?: PairConfig[]
+  auto_pairs?: AutoPairsConfig
   exchanges: Record<string, ExchangeConfig>
   capital_per_trade_usdt: number
   entry_buffer_multiplier: number

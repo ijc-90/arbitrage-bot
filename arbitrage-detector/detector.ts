@@ -1,6 +1,7 @@
 import * as path from 'path'
+import { Database } from 'better-sqlite3'
 import { loadConfig, loadEnv } from './config'
-import { ExchangeClient } from './exchangeClient'
+import { ExchangeClient, BookTick } from './exchangeClient'
 import { computeSpread } from './spreadEngine'
 import { Logger } from './logger'
 import { OpportunityTracker, LoopController } from './opportunityTracker'
@@ -55,6 +56,18 @@ function parseArgs(argv: string[]): { configPath: string; steps: number | null; 
   return { configPath, steps, advanceUrl, dbPath }
 }
 
+function meetsVolumeFloor(db: Database, symbol: string, minVol: number): boolean {
+  try {
+    const row = db.prepare(
+      `SELECT MAX(volume_24h_usdt) AS max_vol FROM pair_snapshots WHERE symbol = ?`
+    ).get(symbol) as { max_vol: number | null } | undefined
+    if (!row || row.max_vol === null) return true  // no data yet — don't exclude
+    return row.max_vol >= minVol
+  } catch {
+    return true  // table doesn't exist yet — don't exclude
+  }
+}
+
 async function main(): Promise<void> {
   const { configPath, steps, advanceUrl, dbPath } = parseArgs(process.argv.slice(2))
 
@@ -76,21 +89,59 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => { logger.flush(); process.exit(0) })
   process.on('SIGTERM', () => { logger.flush(); process.exit(0) })
 
+  const configuredExchanges = Object.keys(config.exchanges)
+
   while (controller.hasSteps) {
     if (tracker.hasOpenOpportunity()) {
       await sleep(config.fast_poll_interval_ms)
       continue
     }
 
-    for (const pair of config.pairs) {
-      const [exA, exB] = pair.exchanges
-      const [tickA, tickB] = await client.getPairTicks(pair.symbol, exA, pair.symbol, exB)
-      const spread = computeSpread(exA, tickA, exB, tickB, config)
-      logger.logPrice(pair.symbol, spread)
+    if (config.auto_pairs) {
+      // Bulk fetch — 1 API call per exchange
+      const tickerMaps = new Map<string, Map<string, BookTick>>()
+      for (const ex of configuredExchanges) {
+        tickerMaps.set(ex, await client.getAllBookTickers(ex))
+      }
 
-      if (spread.isOpportunity && !tracker.hasOpenOpportunity()) {
-        const opp = tracker.open(spread, pair.symbol, client, config, logger, controller)
-        logger.logOpportunityOpened(opp)
+      // Intersection: symbols present on ALL configured exchanges
+      const [firstEx, ...restExchanges] = configuredExchanges
+      const candidates = [...tickerMaps.get(firstEx)!.keys()].filter(sym =>
+        restExchanges.every(ex => tickerMaps.get(ex)!.has(sym))
+      )
+
+      // Volume filter from pair_snapshots (skipped if min_volume_usdt = 0)
+      const minVol = config.auto_pairs.min_volume_usdt
+      const qualifying = minVol > 0
+        ? candidates.filter(sym => meetsVolumeFloor(db, sym, minVol))
+        : candidates
+
+      console.log(`[auto] ${qualifying.length} pairs qualifying (${candidates.length} in intersection, min_vol=${minVol})`)
+
+      for (const sym of qualifying) {
+        const tickA = tickerMaps.get(firstEx)!.get(sym)!
+        const tickB = tickerMaps.get(restExchanges[0])!.get(sym)!
+        const spread = computeSpread(firstEx, tickA, restExchanges[0], tickB, config)
+        logger.logPrice(sym, spread)
+
+        if (spread.isOpportunity && !tracker.hasOpenOpportunity()) {
+          const opp = tracker.open(spread, sym, [firstEx, restExchanges[0]], client, config, logger, controller)
+          logger.logOpportunityOpened(opp)
+          break  // fast-path takes over; stop scanning this cycle
+        }
+      }
+    } else {
+      // Static mode: config.pairs list (used in test mode / explicit override)
+      for (const pair of config.pairs ?? []) {
+        const [exA, exB] = pair.exchanges
+        const [tickA, tickB] = await client.getPairTicks(pair.symbol, exA, pair.symbol, exB)
+        const spread = computeSpread(exA, tickA, exB, tickB, config)
+        logger.logPrice(pair.symbol, spread)
+
+        if (spread.isOpportunity && !tracker.hasOpenOpportunity()) {
+          const opp = tracker.open(spread, pair.symbol, [exA, exB], client, config, logger, controller)
+          logger.logOpportunityOpened(opp)
+        }
       }
     }
 

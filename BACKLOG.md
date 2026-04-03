@@ -14,6 +14,7 @@ Alarm-only cross-exchange arbitrage detector. Tracks what's built, what's next, 
 - **8 monitored pairs** in `config.yaml`: BTC, ETH, SOL, BNB, XRP, ADA, DOGE, AVAX (all binance+bybit)
 - **Dashboard v2** — pairs table with sort (most opps / best spread / total PnL / volume 24h), symbol search, monitored-only vs all-pairs toggle; `GET /api/pairs` endpoint returns full pair universe from `pair_snapshots` enriched with spread+opp data for monitored pairs; unmonitored pairs shown dimmed with volume only; unified open+closed opportunities table (50 rows) with pair + status filters; opportunity detail panel (slide-in) with tick-by-tick SVG sparkline; `GET /api/opportunity/:id` endpoint
 - **Docker / docker-compose** — `Dockerfile` in each service (`arbitrage-detector`, `dashboard`, `pair-fetcher`); `docker-compose.prod.yml` at root; shared named volume `arb-data` mounted at `/app/logs` in all three containers; exchange URLs injected via `.env.prod` (not baked into images); `.env.prod.example` committed as template
+- **Dynamic pair detection** — detector uses bulk ticker endpoints (`GET /api/v3/ticker/bookTicker` for Binance, `GET /v5/market/tickers?category=spot` for Bybit) to fetch all pairs in 2 API calls per slow cycle; computes intersection of symbols present on all configured exchanges; filters by `min_volume_usdt` from `pair_snapshots` (skips filter if table empty — graceful startup); logs spread for every qualifying pair each cycle; when opportunity opens, `OpportunityTracker` fast-path polls only that pair at `fast_poll_interval_ms`; static `pairs:` in config still supported for test mode
 
 ---
 
@@ -31,6 +32,15 @@ Per-exchange granularity: track `lastSuccessfulFetchAt` per exchange in `Exchang
 Dashboard impact: show duration as a range (`12ms – 5.2s`) when resolution is low, rather than a single misleading number.
 
 Schema columns to add to `opportunities`: `open_resolution_ms INTEGER`, `close_resolution_ms INTEGER`.
+
+---
+
+### Mock server bulk endpoints
+The mock server (`mock-exchanges/`) only implements per-symbol endpoints. For local end-to-end testing with `auto_pairs`, it needs:
+- `GET /binance/api/v3/ticker/bookTicker` (no symbol → all tickers for current scenario)
+- `GET /bybit/v5/market/tickers?category=spot` (no symbol → all tickers)
+
+Without these, `auto_pairs` mode can only be tested against real exchanges.
 
 ---
 

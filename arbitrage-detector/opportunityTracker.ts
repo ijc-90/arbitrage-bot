@@ -34,6 +34,7 @@ export class OpportunityTracker {
   open(
     spread: { netSpreadPct: number; estimatedPnlUsdt: number; exchangeBuy: string; exchangeSell: string; askBuy: number; bidSell: number },
     pair: string,
+    exchanges: [string, string],
     client: ExchangeClient,
     config: Config,
     logger: Logger,
@@ -52,7 +53,7 @@ export class OpportunityTracker {
     }
     this.current = opp
 
-    const [exA, exB] = config.pairs.find(p => p.symbol === pair)!.exchanges
+    const [exA, exB] = exchanges
 
     setTimeout(() => this.poll(opp, exA, exB, client, config, logger, controller), config.fast_poll_interval_ms)
     return opp

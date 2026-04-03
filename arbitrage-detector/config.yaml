@@ -1,20 +1,5 @@
-pairs:
-  - symbol: BTCUSDT
-    exchanges: [binance, bybit]
-  - symbol: ETHUSDT
-    exchanges: [binance, bybit]
-  - symbol: SOLUSDT
-    exchanges: [binance, bybit]
-  - symbol: BNBUSDT
-    exchanges: [binance, bybit]
-  - symbol: XRPUSDT
-    exchanges: [binance, bybit]
-  - symbol: ADAUSDT
-    exchanges: [binance, bybit]
-  - symbol: DOGEUSDT
-    exchanges: [binance, bybit]
-  - symbol: AVAXUSDT
-    exchanges: [binance, bybit]
+auto_pairs:
+  min_volume_usdt: 10000000   # 10M USDT 24h volume floor
 
 exchanges:
   binance:

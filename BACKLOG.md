@@ -11,6 +11,7 @@ Alarm-only cross-exchange arbitrage detector. Tracks what's built, what's next, 
 - **Integration tests migrated to SQLite** — all 47 tests query the DB; each suite runs in an isolated `logs/` dir wiped before the run
 - **Web dashboard** — independent Express process in `dashboard/`; reads DB readonly; polls `/api/snapshot` every 2s; shows live detector status, open opportunity, latest prices per pair, recent opportunities table, aggregate stats
 - **`.gitignore`** — covers `node_modules/`, `logs/`, `dist/`, `*.db`, `.env`, `.DS_Store`
+- **Dashboard v2** — pairs table with sort (most opps / best spread / total PnL) and click-to-filter; unified open+closed opportunities table (50 rows) with pair + status filters; opportunity detail panel (slide-in) with tick-by-tick SVG sparkline; new `GET /api/opportunity/:id` endpoint
 - **Docker / docker-compose** — `Dockerfile` in each service (`arbitrage-detector`, `dashboard`, `pair-fetcher`); `docker-compose.prod.yml` at root; shared named volume `arb-data` mounted at `/app/logs` in all three containers; exchange URLs injected via `.env.prod` (not baked into images); `.env.prod.example` committed as template
 
 ---
@@ -32,9 +33,7 @@ Schema columns to add to `opportunities`: `open_resolution_ms INTEGER`, `close_r
 
 ---
 
-### Dashboard enhancements
-- Tick-by-tick detail view for a selected opportunity (spread over time while open)
-- Filter/sort recent opportunities by pair, exchange, or date range
+### Dashboard enhancements (remaining)
 - Price history retention policy — rolling window or prune by age to keep DB size bounded
 - Duration range display once resolution tracking is implemented
 - **Pair volume section** — surface `pair_snapshots` data: show 24h USDT volume per pair/exchange, flag pairs where our capital would exceed X% of daily volume (configurable threshold)

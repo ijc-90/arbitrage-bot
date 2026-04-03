@@ -24,18 +24,79 @@ function openDb(dbPath: string): Database.Database | null {
   return new Database(dbPath, { readonly: true })
 }
 
-function querySnapshot(dbPath: string) {
-  const db = openDb(dbPath)
-  if (!db) return null
+function hasPairSnapshots(db: Database.Database): boolean {
+  const row = db.prepare(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name='pair_snapshots'`
+  ).get()
+  return !!row
+}
 
-  try {
-    const pairs = db.prepare(`
+// Monitored pairs with opp stats + optional volume enrichment (fast path for snapshot)
+function queryMonitoredPairs(db: Database.Database) {
+  const withVol = hasPairSnapshots(db)
+  if (withVol) {
+    return db.prepare(`
+      WITH latest_vol AS (
+        SELECT symbol, SUM(volume_24h_quote) AS volume_24h_usdt
+        FROM pair_snapshots
+        WHERE id IN (SELECT MAX(id) FROM pair_snapshots GROUP BY exchange, symbol)
+        GROUP BY symbol
+      )
       SELECT
-        p.pair,
+        p.pair                                 AS symbol,
+        1                                      AS is_monitored,
         p.exchange_buy,
         p.exchange_sell,
-        p.ask_buy,
-        p.bid_sell,
+        p.net_spread_pct,
+        p.fetched_at_ms,
+        COUNT(o.id)                            AS opp_count,
+        COALESCE(MAX(o.peak_spread_pct), 0)    AS best_spread_pct,
+        COALESCE(SUM(o.estimated_pnl_usdt), 0) AS total_pnl_usdt,
+        COALESCE(lv.volume_24h_usdt, 0)        AS volume_24h_usdt
+      FROM prices p
+      LEFT JOIN opportunities o ON o.pair = p.pair AND o.close_reason IS NOT NULL
+      LEFT JOIN latest_vol lv ON lv.symbol = p.pair
+      WHERE p.id IN (SELECT MAX(id) FROM prices GROUP BY pair)
+      GROUP BY p.pair
+      ORDER BY opp_count DESC, best_spread_pct DESC
+    `).all()
+  }
+  return db.prepare(`
+    SELECT
+      p.pair                                 AS symbol,
+      1                                      AS is_monitored,
+      p.exchange_buy,
+      p.exchange_sell,
+      p.net_spread_pct,
+      p.fetched_at_ms,
+      COUNT(o.id)                            AS opp_count,
+      COALESCE(MAX(o.peak_spread_pct), 0)    AS best_spread_pct,
+      COALESCE(SUM(o.estimated_pnl_usdt), 0) AS total_pnl_usdt,
+      0                                      AS volume_24h_usdt
+    FROM prices p
+    LEFT JOIN opportunities o ON o.pair = p.pair AND o.close_reason IS NOT NULL
+    WHERE p.id IN (SELECT MAX(id) FROM prices GROUP BY pair)
+    GROUP BY p.pair
+    ORDER BY opp_count DESC, best_spread_pct DESC
+  `).all()
+}
+
+// All pairs from pair_snapshots + monitored enrichment (slow path for /api/pairs)
+function queryAllPairs(db: Database.Database) {
+  if (!hasPairSnapshots(db)) return queryMonitoredPairs(db)
+
+  return db.prepare(`
+    WITH latest_vol AS (
+      SELECT symbol, SUM(volume_24h_quote) AS volume_24h_usdt
+      FROM pair_snapshots
+      WHERE id IN (SELECT MAX(id) FROM pair_snapshots GROUP BY exchange, symbol)
+      GROUP BY symbol
+    ),
+    monitored AS (
+      SELECT
+        p.pair                                 AS symbol,
+        p.exchange_buy,
+        p.exchange_sell,
         p.net_spread_pct,
         p.fetched_at_ms,
         COUNT(o.id)                            AS opp_count,
@@ -45,8 +106,37 @@ function querySnapshot(dbPath: string) {
       LEFT JOIN opportunities o ON o.pair = p.pair AND o.close_reason IS NOT NULL
       WHERE p.id IN (SELECT MAX(id) FROM prices GROUP BY pair)
       GROUP BY p.pair
-      ORDER BY opp_count DESC, best_spread_pct DESC
-    `).all()
+    )
+    SELECT
+      lv.symbol,
+      COALESCE(lv.volume_24h_usdt, 0)        AS volume_24h_usdt,
+      CASE WHEN m.symbol IS NOT NULL THEN 1 ELSE 0 END AS is_monitored,
+      m.exchange_buy,
+      m.exchange_sell,
+      m.net_spread_pct,
+      m.fetched_at_ms,
+      COALESCE(m.opp_count, 0)               AS opp_count,
+      COALESCE(m.best_spread_pct, 0)         AS best_spread_pct,
+      COALESCE(m.total_pnl_usdt, 0)          AS total_pnl_usdt
+    FROM latest_vol lv
+    LEFT JOIN monitored m ON m.symbol = lv.symbol
+    UNION ALL
+    SELECT
+      m.symbol, 0, 1,
+      m.exchange_buy, m.exchange_sell,
+      m.net_spread_pct, m.fetched_at_ms,
+      m.opp_count, m.best_spread_pct, m.total_pnl_usdt
+    FROM monitored m
+    WHERE m.symbol NOT IN (SELECT symbol FROM latest_vol)
+    ORDER BY is_monitored DESC, volume_24h_usdt DESC
+  `).all()
+}
+
+function querySnapshot(dbPath: string) {
+  const db = openDb(dbPath)
+  if (!db) return null
+  try {
+    const pairs = queryMonitoredPairs(db)
 
     const opportunities = db.prepare(`
       SELECT * FROM opportunities
@@ -68,11 +158,7 @@ function querySnapshot(dbPath: string) {
       SELECT MAX(fetched_at_ms) as ts FROM prices
     `).get() as { ts: number | null }
 
-    return {
-      pairs,
-      opportunities,
-      stats: { ...stats, last_seen_ms: lastSeen?.ts ?? null },
-    }
+    return { pairs, opportunities, stats: { ...stats, last_seen_ms: lastSeen?.ts ?? null } }
   } finally {
     db.close()
   }
@@ -81,16 +167,13 @@ function querySnapshot(dbPath: string) {
 function queryOpportunity(dbPath: string, id: string) {
   const db = openDb(dbPath)
   if (!db) return null
-
   try {
     const opp = db.prepare(`SELECT * FROM opportunities WHERE id = ?`).get(id)
     if (!opp) return null
-
     const ticks = db.prepare(`
       SELECT fetched_at_ms, net_spread_pct, ask_buy, bid_sell
       FROM ticks WHERE opp_id = ? ORDER BY fetched_at_ms ASC
     `).all(id)
-
     return { opp, ticks }
   } finally {
     db.close()
@@ -160,12 +243,7 @@ function buildHtml(): string {
     gap: 12px;
     margin-bottom: 20px;
   }
-  .stat-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 12px 16px;
-  }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; }
   .stat-card .label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
   .stat-card .value { font-size: 20px; font-weight: 700; margin-top: 4px; }
   .stat-card .value.green  { color: var(--green); }
@@ -191,15 +269,18 @@ function buildHtml(): string {
     align-items: center;
     justify-content: space-between;
     margin-bottom: 8px;
+    gap: 8px;
   }
   .section-header h2 {
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.1em;
     color: var(--dim);
+    white-space: nowrap;
   }
-  .section-controls { display: flex; gap: 8px; align-items: center; }
-  select.filter {
+  .section-controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+
+  select.filter, input.filter {
     background: var(--surface);
     border: 1px solid var(--border);
     color: var(--text);
@@ -207,10 +288,27 @@ function buildHtml(): string {
     font-size: 11px;
     padding: 3px 8px;
     border-radius: 3px;
-    cursor: pointer;
     outline: none;
   }
-  select.filter:hover { border-color: var(--dim); }
+  select.filter { cursor: pointer; }
+  input.filter { width: 130px; }
+  input.filter::placeholder { color: var(--dim); }
+  select.filter:hover, input.filter:hover { border-color: var(--dim); }
+  input.filter:focus { border-color: var(--blue); }
+
+  .toggle-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--dim);
+    font-family: inherit;
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 3px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .toggle-btn.active { border-color: var(--blue); color: var(--blue); }
+  .toggle-btn:hover { border-color: var(--dim); color: var(--text); }
 
   table {
     width: 100%;
@@ -230,29 +328,19 @@ function buildHtml(): string {
     border-bottom: 1px solid var(--border);
     font-weight: 500;
   }
-  td {
-    padding: 7px 12px;
-    border-bottom: 1px solid #0e0e18;
-    font-size: 12px;
-  }
+  td { padding: 7px 12px; border-bottom: 1px solid #0e0e18; font-size: 12px; }
   tr:last-child td { border-bottom: none; }
   tr:hover td { background: #1a1a28; }
   tr.clickable { cursor: pointer; }
+  tr.unmonitored td { color: var(--dim); }
+  tr.unmonitored td:first-child { color: var(--text); }
 
-  .pair-link {
-    color: var(--blue);
-    cursor: pointer;
-    text-decoration: none;
-  }
+  .monitored-dot { color: var(--green); font-size: 8px; margin-right: 4px; vertical-align: middle; }
+
+  .pair-link { color: var(--blue); cursor: pointer; }
   .pair-link:hover { text-decoration: underline; }
 
-  .tag {
-    display: inline-block;
-    padding: 1px 6px;
-    border-radius: 3px;
-    font-size: 10px;
-    font-weight: 600;
-  }
+  .tag { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
   .tag.conv { background: #1a2f1a; color: var(--green); }
   .tag.err  { background: #2f1a1a; color: var(--red); }
   .tag.open { background: #1a2a1a; color: var(--green); animation: pulse 1.5s ease-in-out infinite; }
@@ -263,87 +351,37 @@ function buildHtml(): string {
   .spread-neu { color: var(--dim); }
   .arrow { color: var(--dim); }
 
-  #no-data {
-    display: none;
-    text-align: center;
-    padding: 60px;
-    color: var(--dim);
-  }
+  #no-data { display: none; text-align: center; padding: 60px; color: var(--dim); }
   #no-data .big { font-size: 32px; margin-bottom: 8px; }
 
   /* ── Detail panel ── */
-  #detail-overlay {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.5);
-    z-index: 99;
-  }
+  #detail-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 99; }
   #detail-overlay.open { display: block; }
   #detail-panel {
-    position: fixed;
-    top: 0;
-    right: -46%;
-    width: 45%;
-    height: 100%;
-    background: #0e0e16;
-    border-left: 1px solid var(--border);
-    padding: 24px;
-    overflow-y: auto;
-    transition: right 0.2s ease;
-    z-index: 100;
+    position: fixed; top: 0; right: -46%; width: 45%; height: 100%;
+    background: #0e0e16; border-left: 1px solid var(--border);
+    padding: 24px; overflow-y: auto;
+    transition: right 0.2s ease; z-index: 100;
   }
   #detail-panel.open { right: 0; }
   .detail-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    margin-bottom: 20px;
-    padding-bottom: 16px;
-    border-bottom: 1px solid var(--border);
+    display: flex; align-items: flex-start; justify-content: space-between;
+    margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--border);
   }
   .detail-header h2 { font-size: 16px; color: var(--blue); }
   .detail-header .sub { font-size: 12px; color: var(--dim); margin-top: 2px; }
   .detail-close {
-    background: none;
-    border: 1px solid var(--border);
-    color: var(--dim);
-    font-family: inherit;
-    font-size: 14px;
-    cursor: pointer;
-    padding: 2px 8px;
-    border-radius: 3px;
-    line-height: 1.4;
+    background: none; border: 1px solid var(--border); color: var(--dim);
+    font-family: inherit; font-size: 14px; cursor: pointer;
+    padding: 2px 8px; border-radius: 3px; line-height: 1.4;
   }
   .detail-close:hover { color: var(--text); border-color: var(--dim); }
-  .detail-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
-    margin-bottom: 20px;
-  }
+  .detail-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
   .detail-field .label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
   .detail-field .value { font-size: 14px; font-weight: 600; margin-top: 3px; }
-  .detail-section-title {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--dim);
-    margin-bottom: 10px;
-  }
-  .sparkline-wrap {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 12px;
-  }
-  .sparkline-legend {
-    display: flex;
-    gap: 16px;
-    margin-top: 8px;
-    font-size: 10px;
-    color: var(--dim);
-  }
+  .detail-section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--dim); margin-bottom: 10px; }
+  .sparkline-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 12px; }
+  .sparkline-legend { display: flex; gap: 16px; margin-top: 8px; font-size: 10px; color: var(--dim); }
   .sparkline-legend span { display: flex; align-items: center; gap: 4px; }
 </style>
 </head>
@@ -399,7 +437,10 @@ function buildHtml(): string {
           <option value="opps">Sort: Most Opportunities</option>
           <option value="spread">Sort: Best Spread</option>
           <option value="pnl">Sort: Total PnL</option>
+          <option value="volume">Sort: Volume 24h</option>
         </select>
+        <input class="filter" id="pairs-search" type="text" placeholder="search symbol…" />
+        <button class="toggle-btn" id="pairs-scope-btn">Show all pairs</button>
       </div>
     </div>
     <table>
@@ -407,15 +448,16 @@ function buildHtml(): string {
         <tr>
           <th>Pair</th>
           <th>Direction</th>
-          <th>Current Spread</th>
+          <th>Spread</th>
           <th>Opps</th>
           <th>Best Spread</th>
           <th>Total PnL</th>
+          <th>Volume 24h</th>
           <th>Last Seen</th>
         </tr>
       </thead>
       <tbody id="pairs-body">
-        <tr><td colspan="7" style="color:var(--dim);text-align:center">–</td></tr>
+        <tr><td colspan="8" style="color:var(--dim);text-align:center">–</td></tr>
       </tbody>
     </table>
   </div>
@@ -424,9 +466,7 @@ function buildHtml(): string {
     <div class="section-header">
       <h2>Opportunities</h2>
       <div class="section-controls">
-        <select class="filter" id="opp-pair-filter">
-          <option value="">All pairs</option>
-        </select>
+        <select class="filter" id="opp-pair-filter"><option value="">All pairs</option></select>
         <select class="filter" id="opp-status-filter">
           <option value="all">All</option>
           <option value="open">Open</option>
@@ -437,15 +477,9 @@ function buildHtml(): string {
     <table>
       <thead>
         <tr>
-          <th>ID</th>
-          <th>Pair</th>
-          <th>Direction</th>
-          <th>Open Spread</th>
-          <th>Peak Spread</th>
-          <th>Est. PnL</th>
-          <th>Duration</th>
-          <th>Time</th>
-          <th>Status</th>
+          <th>ID</th><th>Pair</th><th>Direction</th>
+          <th>Open Spread</th><th>Peak Spread</th>
+          <th>Est. PnL</th><th>Duration</th><th>Time</th><th>Status</th>
         </tr>
       </thead>
       <tbody id="opps-body">
@@ -486,7 +520,14 @@ function buildHtml(): string {
 <script>
   const fmtPct  = v => (v >= 0 ? '+' : '') + v.toFixed(4) + '%'
   const fmtUsdt = v => '$' + v.toFixed(4)
-  const fmtDur  = ms => {
+  const fmtVol  = v => {
+    if (!v) return '–'
+    if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B'
+    if (v >= 1e6) return '$' + (v / 1e6).toFixed(1) + 'M'
+    if (v >= 1e3) return '$' + (v / 1e3).toFixed(0) + 'K'
+    return '$' + v.toFixed(0)
+  }
+  const fmtDur = ms => {
     if (ms == null) return '–'
     if (ms < 1000)  return ms.toFixed(0) + 'ms'
     if (ms < 60000) return (ms / 1000).toFixed(1) + 's'
@@ -495,19 +536,18 @@ function buildHtml(): string {
   const fmtAgo = ms => {
     if (ms == null) return '–'
     const d = Date.now() - ms
-    if (d < 60000)  return Math.floor(d / 1000) + 's ago'
+    if (d < 60000)   return Math.floor(d / 1000) + 's ago'
     if (d < 3600000) return Math.floor(d / 60000) + 'm ago'
     return Math.floor(d / 3600000) + 'h ago'
   }
-  const fmtTs = ms => ms ? new Date(ms).toLocaleTimeString() : '–'
-  const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
+  const fmtTs  = ms => ms ? new Date(ms).toLocaleTimeString() : '–'
+  const esc    = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
 
   function spreadClass(v) {
     if (v > 0.05) return 'spread-pos'
     if (v < 0)    return 'spread-neg'
     return 'spread-neu'
   }
-
   function statusPill(lastSeenMs) {
     if (!lastSeenMs) return ['waiting', 'WAITING']
     const age = Date.now() - lastSeenMs
@@ -516,79 +556,97 @@ function buildHtml(): string {
     return ['offline', 'OFFLINE']
   }
 
-  // ── State ─────────────────────────────────────────────────────────────────
-  let currentData = null
-  let pairsSort   = 'opps'
+  // ── State ──────────────────────────────────────────────────────────────────
+  let currentData    = null   // from /api/snapshot
+  let allPairsData   = null   // from /api/pairs (loaded on demand)
+  let showAllPairs   = false
+  let pairsSort      = 'opps'
+  let pairsSearch    = ''
 
-  // ── Pairs rendering ───────────────────────────────────────────────────────
-  function sortedPairs(pairs) {
+  // ── Pairs rendering ────────────────────────────────────────────────────────
+  function sortPairs(pairs) {
     const copy = [...pairs]
-    if (pairsSort === 'spread') copy.sort((a, b) => b.best_spread_pct - a.best_spread_pct)
-    else if (pairsSort === 'pnl') copy.sort((a, b) => b.total_pnl_usdt - a.total_pnl_usdt)
-    else copy.sort((a, b) => b.opp_count - a.opp_count || b.best_spread_pct - a.best_spread_pct)
+    if (pairsSort === 'volume') copy.sort((a, b) => b.volume_24h_usdt - a.volume_24h_usdt || b.is_monitored - a.is_monitored)
+    else if (pairsSort === 'spread') copy.sort((a, b) => b.best_spread_pct - a.best_spread_pct || b.is_monitored - a.is_monitored)
+    else if (pairsSort === 'pnl')    copy.sort((a, b) => b.total_pnl_usdt - a.total_pnl_usdt  || b.is_monitored - a.is_monitored)
+    else copy.sort((a, b) => b.is_monitored - a.is_monitored || b.opp_count - a.opp_count || b.best_spread_pct - a.best_spread_pct)
     return copy
   }
 
   function renderPairs(pairs) {
     const body = document.getElementById('pairs-body')
-    if (!pairs || pairs.length === 0) {
-      body.innerHTML = '<tr><td colspan="7" style="color:var(--dim);text-align:center">No price data yet</td></tr>'
+    let rows = pairs || []
+    if (pairsSearch) {
+      const q = pairsSearch.toUpperCase()
+      rows = rows.filter(p => p.symbol.includes(q))
+    }
+    rows = sortPairs(rows)
+
+    if (rows.length === 0) {
+      body.innerHTML = \`<tr><td colspan="8" style="color:var(--dim);text-align:center">No pairs</td></tr>\`
       return
     }
-    body.innerHTML = sortedPairs(pairs).map(p => \`
-      <tr>
-        <td><span class="pair-link" data-pair="\${esc(p.pair)}">\${esc(p.pair)}</span></td>
-        <td>\${esc(p.exchange_buy)} <span class="arrow">→</span> \${esc(p.exchange_sell)}</td>
-        <td class="\${spreadClass(p.net_spread_pct)}">\${fmtPct(p.net_spread_pct)}</td>
-        <td style="color:var(--blue)">\${p.opp_count}</td>
-        <td class="\${spreadClass(p.best_spread_pct)}">\${p.best_spread_pct > 0 ? fmtPct(p.best_spread_pct) : '–'}</td>
-        <td class="spread-pos">\${p.total_pnl_usdt > 0 ? fmtUsdt(p.total_pnl_usdt) : '–'}</td>
-        <td style="color:var(--dim)">\${fmtAgo(p.fetched_at_ms)}</td>
-      </tr>
-    \`).join('')
+    body.innerHTML = rows.map(p => {
+      const dot = p.is_monitored ? '<span class="monitored-dot">●</span>' : ''
+      const dir = p.exchange_buy ? \`\${esc(p.exchange_buy)} <span class="arrow">→</span> \${esc(p.exchange_sell)}\` : '<span style="color:var(--dim)">–</span>'
+      const spread = p.net_spread_pct != null && p.is_monitored
+        ? \`<span class="\${spreadClass(p.net_spread_pct)}">\${fmtPct(p.net_spread_pct)}</span>\`
+        : '<span style="color:var(--dim)">–</span>'
+      const bestSpread = p.best_spread_pct > 0 ? \`<span class="\${spreadClass(p.best_spread_pct)}">\${fmtPct(p.best_spread_pct)}</span>\` : '<span style="color:var(--dim)">–</span>'
+      const pnl  = p.total_pnl_usdt > 0  ? \`<span class="spread-pos">\${fmtUsdt(p.total_pnl_usdt)}</span>\` : '<span style="color:var(--dim)">–</span>'
+      const seen = p.fetched_at_ms ? fmtAgo(p.fetched_at_ms) : '–'
+      return \`<tr class="\${p.is_monitored ? '' : 'unmonitored'}">
+        <td>\${dot}<span class="pair-link" data-pair="\${esc(p.symbol)}">\${esc(p.symbol)}</span></td>
+        <td>\${dir}</td>
+        <td>\${spread}</td>
+        <td style="color:var(--blue)">\${p.opp_count || '–'}</td>
+        <td>\${bestSpread}</td>
+        <td>\${pnl}</td>
+        <td>\${fmtVol(p.volume_24h_usdt)}</td>
+        <td style="color:var(--dim)">\${seen}</td>
+      </tr>\`
+    }).join('')
   }
 
-  // ── Opportunities rendering ───────────────────────────────────────────────
+  function activePairs() {
+    return showAllPairs ? (allPairsData || currentData?.pairs || []) : (currentData?.pairs || [])
+  }
+
+  // ── Opportunities rendering ────────────────────────────────────────────────
   function renderOpps(opps) {
     const pairFilter   = document.getElementById('opp-pair-filter').value
     const statusFilter = document.getElementById('opp-status-filter').value
     const body = document.getElementById('opps-body')
-
-    let filtered = opps || []
-    if (pairFilter)           filtered = filtered.filter(o => o.pair === pairFilter)
-    if (statusFilter === 'open')   filtered = filtered.filter(o => !o.close_reason)
-    if (statusFilter === 'closed') filtered = filtered.filter(o =>  o.close_reason)
-
-    if (filtered.length === 0) {
+    let rows = opps || []
+    if (pairFilter)                rows = rows.filter(o => o.pair === pairFilter)
+    if (statusFilter === 'open')   rows = rows.filter(o => !o.close_reason)
+    if (statusFilter === 'closed') rows = rows.filter(o =>  o.close_reason)
+    if (rows.length === 0) {
       body.innerHTML = \`<tr><td colspan="9" style="color:var(--dim);text-align:center">No opportunities</td></tr>\`
       return
     }
-
-    body.innerHTML = filtered.map(o => {
+    body.innerHTML = rows.map(o => {
       const isOpen = !o.close_reason
       const tag = isOpen
         ? '<span class="tag open">OPEN</span>'
         : o.close_reason === 'CONVERGENCE'
           ? '<span class="tag conv">CONV</span>'
           : '<span class="tag err">ERR</span>'
-      const timeMs  = isOpen ? o.opened_at_ms : o.closed_at_ms
-      return \`
-        <tr class="clickable" data-opp-id="\${esc(o.id)}">
-          <td style="color:var(--dim);font-size:10px">\${esc(o.id)}</td>
-          <td>\${esc(o.pair)}</td>
-          <td>\${esc(o.exchange_buy)} <span class="arrow">→</span> \${esc(o.exchange_sell)}</td>
-          <td class="\${spreadClass(o.net_spread_pct)}">\${fmtPct(o.net_spread_pct)}</td>
-          <td class="\${spreadClass(o.peak_spread_pct)}">\${fmtPct(o.peak_spread_pct)}</td>
-          <td class="spread-pos">\${fmtUsdt(o.estimated_pnl_usdt)}</td>
-          <td>\${isOpen ? fmtDur(Date.now() - o.opened_at_ms) : fmtDur(o.duration_ms)}</td>
-          <td style="color:var(--dim)">\${fmtAgo(timeMs)}</td>
-          <td>\${tag}</td>
-        </tr>
-      \`
+      const timeMs = isOpen ? o.opened_at_ms : o.closed_at_ms
+      return \`<tr class="clickable" data-opp-id="\${esc(o.id)}">
+        <td style="color:var(--dim);font-size:10px">\${esc(o.id)}</td>
+        <td>\${esc(o.pair)}</td>
+        <td>\${esc(o.exchange_buy)} <span class="arrow">→</span> \${esc(o.exchange_sell)}</td>
+        <td class="\${spreadClass(o.net_spread_pct)}">\${fmtPct(o.net_spread_pct)}</td>
+        <td class="\${spreadClass(o.peak_spread_pct)}">\${fmtPct(o.peak_spread_pct)}</td>
+        <td class="spread-pos">\${fmtUsdt(o.estimated_pnl_usdt)}</td>
+        <td>\${isOpen ? fmtDur(Date.now() - o.opened_at_ms) : fmtDur(o.duration_ms)}</td>
+        <td style="color:var(--dim)">\${fmtAgo(timeMs)}</td>
+        <td>\${tag}</td>
+      </tr>\`
     }).join('')
   }
 
-  // ── Pair filter dropdown population ──────────────────────────────────────
   function updatePairFilterOptions(opps) {
     const sel = document.getElementById('opp-pair-filter')
     const current = sel.value
@@ -597,11 +655,10 @@ function buildHtml(): string {
       pairs.map(p => \`<option value="\${esc(p)}" \${p === current ? 'selected' : ''}>\${esc(p)}</option>\`).join('')
   }
 
-  // ── Sparkline ─────────────────────────────────────────────────────────────
+  // ── Sparkline ──────────────────────────────────────────────────────────────
   function renderSparkline(ticks) {
-    if (!ticks || ticks.length < 2) {
+    if (!ticks || ticks.length < 2)
       return '<div style="color:var(--dim);text-align:center;padding:16px 0;font-size:11px">No tick data</div>'
-    }
     const W = 400, H = 80, PAD = 6
     const vals  = ticks.map(t => t.net_spread_pct)
     const times = ticks.map(t => t.fetched_at_ms)
@@ -611,24 +668,19 @@ function buildHtml(): string {
     const maxV = Math.max(...vals, THRESHOLD + 0.05)
     const rangeV = maxV - minV || 0.001
     const rangeT = maxT - minT || 1
-
     const px = t => PAD + (t - minT) / rangeT * (W - 2 * PAD)
     const py = v => H - PAD - (v - minV) / rangeV * (H - 2 * PAD)
-
-    const points = ticks.map(t =>
-      \`\${px(t.fetched_at_ms).toFixed(1)},\${py(t.net_spread_pct).toFixed(1)}\`
-    ).join(' ')
+    const points = ticks.map(t => \`\${px(t.fetched_at_ms).toFixed(1)},\${py(t.net_spread_pct).toFixed(1)}\`).join(' ')
     const threshY = py(THRESHOLD).toFixed(1)
     const zeroY   = py(0).toFixed(1)
-
     return \`<svg viewBox="0 0 \${W} \${H}" style="width:100%;height:80px;display:block" preserveAspectRatio="none">
-      <line x1="\${PAD}" y1="\${zeroY}" x2="\${W - PAD}" y2="\${zeroY}" stroke="#6c7086" stroke-width="0.5" opacity="0.4"/>
-      <line x1="\${PAD}" y1="\${threshY}" x2="\${W - PAD}" y2="\${threshY}" stroke="#f9e2af" stroke-width="0.8" stroke-dasharray="4,4" opacity="0.6"/>
+      <line x1="\${PAD}" y1="\${zeroY}" x2="\${W-PAD}" y2="\${zeroY}" stroke="#6c7086" stroke-width="0.5" opacity="0.4"/>
+      <line x1="\${PAD}" y1="\${threshY}" x2="\${W-PAD}" y2="\${threshY}" stroke="#f9e2af" stroke-width="0.8" stroke-dasharray="4,4" opacity="0.6"/>
       <polyline points="\${points}" fill="none" stroke="#89b4fa" stroke-width="1.5" stroke-linejoin="round"/>
     </svg>\`
   }
 
-  // ── Detail panel ──────────────────────────────────────────────────────────
+  // ── Detail panel ───────────────────────────────────────────────────────────
   async function openDetailPanel(oppId) {
     let detail
     try {
@@ -636,22 +688,22 @@ function buildHtml(): string {
       detail = await r.json()
     } catch { return }
     if (!detail || detail.error) return
-
     const o = detail.opp
-    document.getElementById('dp-title').textContent   = o.pair
-    document.getElementById('dp-sub').textContent     = o.exchange_buy + ' → ' + o.exchange_sell + '  ·  ' + o.id
-    document.getElementById('dp-spread').textContent  = fmtPct(o.net_spread_pct)
-    document.getElementById('dp-spread').className    = 'value ' + spreadClass(o.net_spread_pct)
-    document.getElementById('dp-peak').textContent    = fmtPct(o.peak_spread_pct)
-    document.getElementById('dp-peak').className      = 'value ' + spreadClass(o.peak_spread_pct)
-    document.getElementById('dp-pnl').textContent     = fmtUsdt(o.estimated_pnl_usdt)
-    document.getElementById('dp-pnl').className       = 'value spread-pos'
-    document.getElementById('dp-opened').textContent  = fmtTs(o.opened_at_ms)
-    document.getElementById('dp-duration').textContent = o.duration_ms != null ? fmtDur(o.duration_ms) : fmtDur(Date.now() - o.opened_at_ms) + ' (open)'
-    document.getElementById('dp-reason').textContent  = o.close_reason ?? 'OPEN'
-    document.getElementById('dp-reason').style.color  = o.close_reason === 'CONVERGENCE' ? 'var(--green)' : o.close_reason ? 'var(--red)' : 'var(--yellow)'
-    document.getElementById('dp-sparkline').innerHTML = renderSparkline(detail.ticks)
-
+    document.getElementById('dp-title').textContent    = o.pair
+    document.getElementById('dp-sub').textContent      = o.exchange_buy + ' → ' + o.exchange_sell + '  ·  ' + o.id
+    document.getElementById('dp-spread').textContent   = fmtPct(o.net_spread_pct)
+    document.getElementById('dp-spread').className     = 'value ' + spreadClass(o.net_spread_pct)
+    document.getElementById('dp-peak').textContent     = fmtPct(o.peak_spread_pct)
+    document.getElementById('dp-peak').className       = 'value ' + spreadClass(o.peak_spread_pct)
+    document.getElementById('dp-pnl').textContent      = fmtUsdt(o.estimated_pnl_usdt)
+    document.getElementById('dp-pnl').className        = 'value spread-pos'
+    document.getElementById('dp-opened').textContent   = fmtTs(o.opened_at_ms)
+    document.getElementById('dp-duration').textContent = o.duration_ms != null
+      ? fmtDur(o.duration_ms) : fmtDur(Date.now() - o.opened_at_ms) + ' (open)'
+    document.getElementById('dp-reason').textContent   = o.close_reason ?? 'OPEN'
+    document.getElementById('dp-reason').style.color   = o.close_reason === 'CONVERGENCE'
+      ? 'var(--green)' : o.close_reason ? 'var(--red)' : 'var(--yellow)'
+    document.getElementById('dp-sparkline').innerHTML  = renderSparkline(detail.ticks)
     document.getElementById('detail-panel').classList.add('open')
     document.getElementById('detail-overlay').classList.add('open')
   }
@@ -661,7 +713,7 @@ function buildHtml(): string {
     document.getElementById('detail-overlay').classList.remove('open')
   }
 
-  // ── Main render ───────────────────────────────────────────────────────────
+  // ── Main render ────────────────────────────────────────────────────────────
   function renderAll(data) {
     const s = data.stats
     document.getElementById('stat-total').textContent     = s.total_count
@@ -669,7 +721,6 @@ function buildHtml(): string {
     document.getElementById('stat-avg-pnl').textContent   = s.total_count > 0 ? fmtUsdt(s.avg_pnl) : '–'
     document.getElementById('stat-avg-dur').textContent   = s.total_count > 0 ? fmtDur(s.avg_duration_ms) : '–'
 
-    // Open opp banner
     const openOpp = (data.opportunities || []).find(o => !o.close_reason) ?? null
     const ooSection = document.getElementById('open-opp-section')
     if (openOpp) {
@@ -683,22 +734,18 @@ function buildHtml(): string {
       ooSection.style.display = 'none'
     }
 
-    renderPairs(data.pairs)
+    renderPairs(activePairs())
     updatePairFilterOptions(data.opportunities)
     renderOpps(data.opportunities)
   }
 
-  // ── Fetch loop ────────────────────────────────────────────────────────────
+  // ── Fetch loop ─────────────────────────────────────────────────────────────
   async function fetchSnapshot() {
     let data
-    try {
-      const r = await fetch('/api/snapshot')
-      data = await r.json()
-    } catch { return }
+    try { data = await (await fetch('/api/snapshot')).json() } catch { return }
 
     const noData = document.getElementById('no-data')
     const main   = document.getElementById('main-content')
-
     if (!data || data.error) {
       noData.style.display = 'block'
       main.style.display   = 'none'
@@ -706,7 +753,6 @@ function buildHtml(): string {
       document.getElementById('status-pill').textContent = 'WAITING'
       return
     }
-
     noData.style.display = 'none'
     main.style.display   = 'block'
 
@@ -720,16 +766,47 @@ function buildHtml(): string {
     renderAll(data)
   }
 
-  // ── Event wiring ─────────────────────────────────────────────────────────
+  async function fetchAllPairs() {
+    const btn = document.getElementById('pairs-scope-btn')
+    btn.textContent = 'Loading…'
+    btn.disabled = true
+    try {
+      allPairsData = await (await fetch('/api/pairs')).json()
+    } catch { allPairsData = null }
+    btn.disabled = false
+    showAllPairs = !!allPairsData
+    btn.textContent = showAllPairs ? 'Monitored only' : 'Show all pairs'
+    btn.classList.toggle('active', showAllPairs)
+    renderPairs(activePairs())
+  }
+
+  // ── Event wiring ───────────────────────────────────────────────────────────
   document.getElementById('pairs-sort').addEventListener('change', e => {
     pairsSort = e.target.value
-    if (currentData) renderPairs(currentData.pairs)
+    renderPairs(activePairs())
+  })
+
+  document.getElementById('pairs-search').addEventListener('input', e => {
+    pairsSearch = e.target.value.trim()
+    renderPairs(activePairs())
+  })
+
+  document.getElementById('pairs-scope-btn').addEventListener('click', () => {
+    if (!showAllPairs) {
+      fetchAllPairs()
+    } else {
+      showAllPairs = false
+      allPairsData = null
+      const btn = document.getElementById('pairs-scope-btn')
+      btn.textContent = 'Show all pairs'
+      btn.classList.remove('active')
+      renderPairs(activePairs())
+    }
   })
 
   document.getElementById('opp-pair-filter').addEventListener('change', () => {
     if (currentData) renderOpps(currentData.opportunities)
   })
-
   document.getElementById('opp-status-filter').addEventListener('change', () => {
     if (currentData) renderOpps(currentData.opportunities)
   })
@@ -744,9 +821,9 @@ function buildHtml(): string {
     if (!link) return
     const pair = link.dataset.pair
     const sel = document.getElementById('opp-pair-filter')
-    sel.value = (sel.value === pair) ? '' : pair
+    sel.value = sel.value === pair ? '' : pair
     if (currentData) renderOpps(currentData.opportunities)
-    document.getElementById('opps-body').closest('.section').scrollIntoView({ behavior: 'smooth' })
+    document.querySelector('#opps-body').closest('.section').scrollIntoView({ behavior: 'smooth' })
   })
 
   document.getElementById('detail-close').addEventListener('click', closeDetailPanel)
@@ -773,23 +850,39 @@ app.get('/', (_req, res) => {
 app.get('/api/snapshot', (_req, res) => {
   try {
     const snapshot = querySnapshot(dbPath)
-    if (!snapshot) {
-      res.status(503).json({ error: 'Database not available yet' })
-      return
-    }
+    if (!snapshot) { res.status(503).json({ error: 'Database not available yet' }); return }
     res.json(snapshot)
   } catch (err: any) {
     res.status(500).json({ error: err.message })
   }
 })
 
+app.get('/api/pairs', (req, res) => {
+  const db = openDb(dbPath)
+  if (!db) { res.status(503).json({ error: 'Database not available yet' }); return }
+  try {
+    let rows = queryAllPairs(db) as any[]
+
+    const q    = typeof req.query.q    === 'string' ? req.query.q.toUpperCase()    : ''
+    const sort = typeof req.query.sort === 'string' ? req.query.sort : ''
+    if (q) rows = rows.filter((r: any) => r.symbol.includes(q))
+    if (sort === 'volume') rows.sort((a: any, b: any) => b.volume_24h_usdt - a.volume_24h_usdt)
+    else if (sort === 'spread') rows.sort((a: any, b: any) => b.best_spread_pct - a.best_spread_pct)
+    else if (sort === 'pnl')    rows.sort((a: any, b: any) => b.total_pnl_usdt - a.total_pnl_usdt)
+    else if (sort === 'opps')   rows.sort((a: any, b: any) => b.opp_count - a.opp_count)
+
+    res.json(rows)
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  } finally {
+    db.close()
+  }
+})
+
 app.get('/api/opportunity/:id', (req, res) => {
   try {
     const detail = queryOpportunity(dbPath, req.params.id)
-    if (!detail) {
-      res.status(404).json({ error: 'Not found' })
-      return
-    }
+    if (!detail) { res.status(404).json({ error: 'Not found' }); return }
     res.json(detail)
   } catch (err: any) {
     res.status(500).json({ error: err.message })

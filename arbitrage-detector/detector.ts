@@ -26,6 +26,10 @@ class StepController implements LoopController {
     await fetch(`${this.advanceUrl}/scenario/advance`, { method: 'POST' })
     this.remaining--
   }
+
+  async fastAdvance(): Promise<void> {
+    return this.advance()  // test fast-path must advance the scenario to get fresh prices
+  }
 }
 
 class ContinuousController implements LoopController {
@@ -38,6 +42,8 @@ class ContinuousController implements LoopController {
   async advance(): Promise<void> {
     await sleep(this.intervalMs)
   }
+
+  async fastAdvance(): Promise<void> {}  // no-op — don't delay the 200ms opportunity fast-path
 }
 
 function parseArgs(argv: string[]): { configPath: string; steps: number | null; advanceUrl: string | null; dbPath: string | null } {
@@ -92,11 +98,6 @@ async function main(): Promise<void> {
   const configuredExchanges = Object.keys(config.exchanges)
 
   while (controller.hasSteps) {
-    if (tracker.hasOpenOpportunity()) {
-      await sleep(config.fast_poll_interval_ms)
-      continue
-    }
-
     if (config.auto_pairs) {
       try {
         // Bulk fetch — 1 API call per exchange
@@ -128,7 +129,7 @@ async function main(): Promise<void> {
           if (spread.isOpportunity && !tracker.hasOpenOpportunity()) {
             const opp = tracker.open(spread, sym, [firstEx, restExchanges[0]], client, config, logger, controller)
             logger.logOpportunityOpened(opp)
-            break  // fast-path takes over; stop scanning this cycle
+            // no break — continue logging all remaining pairs this cycle
           }
         }
       } catch (err) {

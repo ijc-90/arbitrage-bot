@@ -6,6 +6,7 @@ import { Logger } from './logger'
 export interface LoopController {
   readonly hasSteps: boolean
   advance(): Promise<void>
+  fastAdvance(): Promise<void>  // no-op in prod, scenario-advance in test
 }
 
 export interface Opportunity {
@@ -85,9 +86,9 @@ export class OpportunityTracker {
           return
         }
 
-        // still open — advance if budget allows, then schedule next poll
+        // still open — advance scenario (test only), then schedule next fast poll
         if (controller.hasSteps) {
-          controller.advance().then(() => {
+          controller.fastAdvance().then(() => {
             setTimeout(
               () => this.poll(opp, exchangeA, exchangeB, client, config, logger, controller),
               config.fast_poll_interval_ms

@@ -3,13 +3,13 @@ auto_pairs:
 
 exchanges:
   binance:
-    taker_fee_pct: 0.06
+    taker_fee_pct: 0.10      # standard tier; 0.075% if paying fees in BNB
     slippage_estimate_pct: 0.04
   bybit:
-    taker_fee_pct: 0.06
+    taker_fee_pct: 0.10      # standard tier
     slippage_estimate_pct: 0.04
   bingx:
-    taker_fee_pct: 0.06
+    taker_fee_pct: 0.10      # standard tier
     slippage_estimate_pct: 0.04
 
 capital_per_trade_usdt: 500

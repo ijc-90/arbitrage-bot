@@ -1,12 +1,11 @@
-FROM node:20-alpine
+FROM node:20-bullseye-slim
 
-RUN apk add --no-cache --virtual .build-deps python3 make g++
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY package*.json ./
-RUN npm install && apk del .build-deps
-
 COPY . .
+RUN npm_config_nodedir=/usr/local npm rebuild better-sqlite3 --build-from-source
 
 EXPOSE 4000
-CMD ["npx", "ts-node", "server.ts", "--db", "/app/logs/arb.db", "--port", "4000"]
+CMD ["node", "dist/server.js", "--db", "/app/logs/arb.db", "--port", "4000"]

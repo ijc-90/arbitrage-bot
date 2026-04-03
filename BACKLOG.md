@@ -11,22 +11,11 @@ Alarm-only cross-exchange arbitrage detector. Tracks what's built, what's next, 
 - **Integration tests migrated to SQLite** — all 47 tests query the DB; each suite runs in an isolated `logs/` dir wiped before the run
 - **Web dashboard** — independent Express process in `dashboard/`; reads DB readonly; polls `/api/snapshot` every 2s; shows live detector status, open opportunity, latest prices per pair, recent opportunities table, aggregate stats
 - **`.gitignore`** — covers `node_modules/`, `logs/`, `dist/`, `*.db`, `.env`, `.DS_Store`
+- **Docker / docker-compose** — `Dockerfile` in each service (`arbitrage-detector`, `dashboard`, `pair-fetcher`); `docker-compose.prod.yml` at root; shared named volume `arb-data` mounted at `/app/logs` in all three containers; exchange URLs injected via `.env.prod` (not baked into images); `.env.prod.example` committed as template
 
 ---
 
 ## Backlog
-
-### Dockerize
-Run the full stack with `docker-compose up`.
-
-Three services:
-- `mock` — mock-exchanges server (port 3000)
-- `detector` — arbitrage-detector, writes to a shared `arb.db` volume
-- `dashboard` — dashboard server (port 4000), reads same `arb.db` volume
-
-Shared DB via a named Docker volume mounted into both `detector` and `dashboard`. The `detector` should wait for `mock` to be healthy before starting (in dev/test mode). In prod mode, `mock` is not needed — `detector` points at real exchange URLs via `.env`.
-
----
 
 ### Timing resolution
 Track how precisely we know when an opportunity opened and closed.

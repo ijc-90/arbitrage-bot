@@ -45,5 +45,8 @@ cd arbitrage-detector/tests/integration && npx ts-node --project tsconfig.json r
 - logs/ and arb.db created on startup if missing
 - SIGINT/SIGTERM flush logs before exit
 
+## Backlog discipline
+On every task or iteration, read BACKLOG.md and update it to reflect what was just completed (move items to Done) and any new work or design decisions that surfaced. Always keep BACKLOG.md current.
+
 ## See also
 BACKLOG.md — what's built, what's next, design decisions on record

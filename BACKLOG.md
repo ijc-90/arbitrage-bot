@@ -44,6 +44,7 @@ Testing against real exchanges has proven faster and more reliable. The mock ser
 - Price history retention policy — rolling window or prune by age to keep DB size bounded
 - Duration range display once resolution tracking is implemented
 - **Pair volume section** — surface `pair_snapshots` data: show 24h USDT volume per pair/exchange, flag pairs where our capital would exceed X% of daily volume (configurable threshold)
+- **Pair view** — a dedicated view showing all symbols (BTC/USDT, ETH/USDT, …) with each symbol's routes listed beneath it (e.g. BTCUSDT: binance↔bybit, binance↔bingx, bybit↔bingx). Lets you compare spread performance across routes for the same symbol. Terminology: **pair** = two assets (BTCUSDT); **route** = a specific pair traded across two exchanges.
 
 ---
 

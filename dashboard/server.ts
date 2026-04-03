@@ -440,7 +440,7 @@ function buildHtml(): string {
 
   <div class="section">
     <div class="section-header">
-      <h2>Pairs</h2>
+      <h2>Routes</h2>
       <div class="section-controls">
         <select class="filter" id="pairs-sort">
           <option value="opps">Sort: Most Opportunities</option>
@@ -449,14 +449,14 @@ function buildHtml(): string {
           <option value="volume">Sort: Volume 24h</option>
         </select>
         <input class="filter" id="pairs-search" type="text" placeholder="search symbol…" />
-        <button class="toggle-btn" id="pairs-scope-btn">Show all pairs</button>
+        <button class="toggle-btn" id="pairs-scope-btn">Show all routes</button>
       </div>
     </div>
     <table>
       <thead>
         <tr>
-          <th>Pair</th>
-          <th>Direction</th>
+          <th>Symbol</th>
+          <th>Route</th>
           <th>Spread</th>
           <th>Opps</th>
           <th>Best Spread</th>
@@ -475,7 +475,7 @@ function buildHtml(): string {
     <div class="section-header">
       <h2>Opportunities</h2>
       <div class="section-controls">
-        <select class="filter" id="opp-pair-filter"><option value="">All pairs</option></select>
+        <select class="filter" id="opp-pair-filter"><option value="">All routes</option></select>
         <select class="filter" id="opp-status-filter">
           <option value="all">All</option>
           <option value="open">Open</option>
@@ -600,7 +600,7 @@ function buildHtml(): string {
     rows = sortPairs(rows)
 
     if (rows.length === 0) {
-      body.innerHTML = \`<tr><td colspan="8" style="color:var(--dim);text-align:center">No pairs</td></tr>\`
+      body.innerHTML = \`<tr><td colspan="8" style="color:var(--dim);text-align:center">No routes</td></tr>\`
       return
     }
     // Apply limit only when not searching (search shows all matches)
@@ -610,7 +610,7 @@ function buildHtml(): string {
       ? \`<tr id="pairs-expand-row">
           <td colspan="8" style="text-align:center;padding:10px">
             <button class="toggle-btn" id="pairs-expand-btn">
-              Show all \${rows.length} pairs
+              Show all \${rows.length} routes
             </button>
             <span style="color:var(--dim);font-size:11px;margin-left:8px">showing \${pairsLimit} of \${rows.length}</span>
           </td>
@@ -695,7 +695,7 @@ function buildHtml(): string {
     const sel = document.getElementById('opp-pair-filter')
     const current = sel.value
     const pairs = [...new Set((opps || []).map(o => o.pair))].sort()
-    sel.innerHTML = '<option value="">All pairs</option>' +
+    sel.innerHTML = '<option value="">All routes</option>' +
       pairs.map(p => \`<option value="\${esc(p)}" \${p === current ? 'selected' : ''}>\${esc(p)}</option>\`).join('')
   }
 
@@ -819,7 +819,7 @@ function buildHtml(): string {
     } catch { allPairsData = null }
     btn.disabled = false
     showAllPairs = !!allPairsData
-    btn.textContent = showAllPairs ? 'Monitored only' : 'Show all pairs'
+    btn.textContent = showAllPairs ? 'Monitored only' : 'Show all routes'
     btn.classList.toggle('active', showAllPairs)
     renderPairs(activePairs())
   }
@@ -844,7 +844,7 @@ function buildHtml(): string {
       showAllPairs = false
       allPairsData = null
       const btn = document.getElementById('pairs-scope-btn')
-      btn.textContent = 'Show all pairs'
+      btn.textContent = 'Show all routes'
       btn.classList.remove('active')
       renderPairs(activePairs())
     }

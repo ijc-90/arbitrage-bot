@@ -52,7 +52,7 @@ export class ExchangeClient {
     if (data.code !== 0) throw new Error(`BingX symbols error: ${data.code}`)
     const active = new Set<string>()
     for (const s of data.data.symbols) {
-      if (s.status === 0 && s.apiStateBuy && s.apiStateSell) active.add(s.symbol)
+      if (s.status === 1 && s.apiStateBuy && s.apiStateSell) active.add(s.symbol)
     }
     this.bingxActiveSymbols = active
     this.bingxActiveSymbolsFetchedAt = Date.now()

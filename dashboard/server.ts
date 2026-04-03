@@ -577,6 +577,8 @@ function buildHtml(): string {
   let showAllPairs   = false
   let pairsSort      = 'opps'
   let pairsSearch    = ''
+  const PAIRS_DEFAULT_LIMIT = 50
+  let pairsLimit     = PAIRS_DEFAULT_LIMIT
 
   // ── Pairs rendering ────────────────────────────────────────────────────────
   function sortPairs(pairs) {
@@ -601,7 +603,20 @@ function buildHtml(): string {
       body.innerHTML = \`<tr><td colspan="8" style="color:var(--dim);text-align:center">No pairs</td></tr>\`
       return
     }
-    body.innerHTML = rows.map(p => {
+    // Apply limit only when not searching (search shows all matches)
+    const limited = !pairsSearch && rows.length > pairsLimit
+    const visible = limited ? rows.slice(0, pairsLimit) : rows
+    const expandRow = limited
+      ? \`<tr id="pairs-expand-row">
+          <td colspan="8" style="text-align:center;padding:10px">
+            <button class="toggle-btn" id="pairs-expand-btn">
+              Show all \${rows.length} pairs
+            </button>
+            <span style="color:var(--dim);font-size:11px;margin-left:8px">showing \${pairsLimit} of \${rows.length}</span>
+          </td>
+        </tr>\`
+      : ''
+    const renderRow = p => {
       const dot = p.is_monitored ? '<span class="monitored-dot">●</span>' : ''
       const dir = p.exchange_buy ? \`\${esc(p.exchange_buy)} <span class="arrow">→</span> \${esc(p.exchange_sell)}\` : '<span style="color:var(--dim)">–</span>'
       const spread = p.net_spread_pct != null && p.is_monitored
@@ -620,7 +635,14 @@ function buildHtml(): string {
         <td>\${fmtVolumes(p.volumes)}</td>
         <td style="color:var(--dim)">\${seen}</td>
       </tr>\`
-    }).join('')
+    }
+    body.innerHTML = visible.map(renderRow).join('') + expandRow
+    if (limited) {
+      document.getElementById('pairs-expand-btn').addEventListener('click', () => {
+        pairsLimit = Infinity
+        renderPairs(activePairs())
+      })
+    }
   }
 
   function activePairs() {
@@ -805,6 +827,7 @@ function buildHtml(): string {
   // ── Event wiring ───────────────────────────────────────────────────────────
   document.getElementById('pairs-sort').addEventListener('change', e => {
     pairsSort = e.target.value
+    pairsLimit = PAIRS_DEFAULT_LIMIT
     renderPairs(activePairs())
   })
 
@@ -814,6 +837,7 @@ function buildHtml(): string {
   })
 
   document.getElementById('pairs-scope-btn').addEventListener('click', () => {
+    pairsLimit = PAIRS_DEFAULT_LIMIT
     if (!showAllPairs) {
       fetchAllPairs()
     } else {

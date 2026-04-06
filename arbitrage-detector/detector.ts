@@ -140,7 +140,6 @@ async function main(): Promise<void> {
         // If pair_snapshots is empty (pair-fetcher hasn't run yet), volPerExchange is empty
         // and the "both exchanges must have data" check is skipped (graceful startup).
         const volPerExchange = new Map<string, Map<string, number>>()  // symbol → exchange → vol
-        const hasPairSnapshots = volPerExchange.size === 0  // re-evaluated below
         try {
           const rows = db.prepare(`
             SELECT symbol, exchange, MAX(volume_24h_quote) AS max_vol

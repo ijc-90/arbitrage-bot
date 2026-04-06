@@ -8,7 +8,6 @@ const config = {
   },
   capital_per_trade_usdt: 500,
   entry_buffer_multiplier: 1.5,
-  min_net_spread_pct: 0.10,
 } as any
 
 export async function runUnit(): Promise<Results> {
@@ -43,7 +42,7 @@ export async function runUnit(): Promise<Results> {
     Math.abs(pos.estimatedPnlUsdt - expectedPnl) < 0.01,
     `expected=${expectedPnl.toFixed(4)} got=${pos.estimatedPnlUsdt.toFixed(4)}`)
 
-  // Below min_net_spread threshold
+  // Below buffer threshold
   const thin = computeSpread(
     'binance', { bidPrice: 43249, askPrice: 43250 },
     'bybit',   { bidPrice: 43250.5, askPrice: 43251 },

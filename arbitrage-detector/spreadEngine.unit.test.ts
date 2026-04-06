@@ -9,14 +9,13 @@ const baseConfig: Config = {
   },
   capital_per_trade_usdt: 500,
   entry_buffer_multiplier: 2.0,
-  min_net_spread_pct: 0.15,
   slow_poll_interval_ms: 5000,
   fast_poll_interval_ms: 200,
 }
 
 // all_in_cost = 0.06+0.06+0.04+0.04 = 0.20%
 // buffer threshold = 0.20 * 2.0 = 0.40%
-// isOpportunity requires net >= 0.15 AND net >= 0.40
+// isOpportunity requires net >= 0.40
 
 describe('computeSpread', () => {
   test('no opportunity when raw spread is negative', () => {
@@ -25,14 +24,6 @@ describe('computeSpread', () => {
     const result = computeSpread('binance', tickA, 'bybit', tickB, baseConfig)
     expect(result.isOpportunity).toBe(false)
     expect(result.netSpreadPct).toBeLessThan(0)
-  })
-
-  test('no opportunity when net spread below min_net_spread_pct', () => {
-    // raw ≈ 0.10%, net = 0.10 - 0.20 = -0.10% → no opp
-    const tickA: Tick = { bidPrice: 43250, askPrice: 43251 }
-    const tickB: Tick = { bidPrice: 43294.3, askPrice: 43300 } // bid_B > ask_A but net negative
-    const result = computeSpread('binance', tickA, 'bybit', tickB, baseConfig)
-    expect(result.isOpportunity).toBe(false)
   })
 
   test('no opportunity when net spread below all_in_cost * entry_buffer_multiplier', () => {
@@ -45,7 +36,7 @@ describe('computeSpread', () => {
     const result = computeSpread('binance', tickA, 'bybit', tickB, baseConfig)
     // net ≈ 0.25%, buffer = 0.40% → no opportunity
     expect(result.isOpportunity).toBe(false)
-    expect(result.netSpreadPct).toBeGreaterThan(baseConfig.min_net_spread_pct)
+    expect(result.netSpreadPct).toBeGreaterThan(0)
     expect(result.netSpreadPct).toBeLessThan(0.40)
   })
 

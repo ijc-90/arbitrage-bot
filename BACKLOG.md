@@ -15,6 +15,8 @@ Alarm-only cross-exchange arbitrage detector. Tracks what's built, what's next, 
 - **Dashboard v2** — pairs table with sort (most opps / best spread / total PnL / volume 24h), symbol search, monitored-only vs all-pairs toggle; `GET /api/pairs` endpoint returns full pair universe from `pair_snapshots` enriched with spread+opp data for monitored pairs; unmonitored pairs shown dimmed with volume only; unified open+closed opportunities table (50 rows) with pair + status filters; opportunity detail panel (slide-in) with tick-by-tick SVG sparkline; `GET /api/opportunity/:id` endpoint
 - **Docker / docker-compose** — `Dockerfile` in each service (`arbitrage-detector`, `dashboard`, `pair-fetcher`); `docker-compose.prod.yml` at root; shared named volume `arb-data` mounted at `/app/logs` in all three containers; exchange URLs injected via `.env.prod` (not baked into images); `.env.prod.example` committed as template
 - **Dynamic pair detection** — detector uses bulk ticker endpoints (`GET /api/v3/ticker/bookTicker` for Binance, `GET /v5/market/tickers?category=spot` for Bybit) to fetch all pairs in 2 API calls per slow cycle; computes intersection of symbols present on all configured exchanges; filters by `min_volume_usdt` from `pair_snapshots` (skips filter if table empty — graceful startup); logs spread for every qualifying pair each cycle; when opportunity opens, `OpportunityTracker` fast-path polls only that pair at `fast_poll_interval_ms`; static `pairs:` in config still supported for test mode
+- **Dead variable removed** — `hasPairSnapshots` in `detector.ts` was always `true` at assignment, never read, and had an inverted name. Deleted.
+- **`min_net_spread_pct` removed** — redundant entry condition eliminated from `spreadEngine.ts`, `config.ts`, both config YAMLs, and tests. Entry is now gated solely by `net >= all_in_cost * entry_buffer_multiplier`. The removed condition was never binding (buffer threshold always exceeded it in both prod and test configs).
 
 ---
 
@@ -48,20 +50,9 @@ Testing against real exchanges has proven faster and more reliable. The mock ser
 
 ---
 
-### Code hygiene — dead variable in detector.ts
-**File:** `arbitrage-detector/detector.ts` line 143.
-`hasPairSnapshots = volPerExchange.size === 0` is always `true` (map is freshly created at that point), logic is inverted vs. the name, and the variable is never read again. Delete this line. No functional impact.
-
----
-
 ### Security — re-enable TLS certificate validation in production
 **File:** `docker-compose.prod.yml`.
 `NODE_TLS_REJECT_UNAUTHORIZED=0` is set on all three services. This disables TLS verification for all outbound HTTPS calls to exchange APIs, enabling man-in-the-middle attacks that could spoof price feeds and produce false arbitrage signals. Remove this env var from all services. The `dashboard` service has no outbound API calls and especially does not need it.
-
----
-
-### Config clarity — document or remove `min_net_spread_pct` redundancy
-With production values (`all_in_cost=0.28%`, `entry_buffer_multiplier=2.0`), the buffer threshold is `0.56%`, which always exceeds `min_net_spread_pct=0.15%`. The first entry condition is never binding. Either raise `min_net_spread_pct` to match the effective buffer threshold (so it acts as a meaningful sanity floor), or remove it and consolidate entry logic to a single threshold.
 
 ---
 

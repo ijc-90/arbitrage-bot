@@ -23,7 +23,6 @@ export interface Config {
   exchanges: Record<string, ExchangeConfig>
   capital_per_trade_usdt: number
   entry_buffer_multiplier: number
-  min_net_spread_pct: number
   slow_poll_interval_ms: number
   fast_poll_interval_ms: number
 }

@@ -38,14 +38,12 @@ export function computeSpread(
   const rawAB = (tickB.bidPrice - tickA.askPrice) / tickA.askPrice * 100
   const netAB = rawAB - allInCostAB
   const oppAB =
-    netAB >= config.min_net_spread_pct &&
     netAB >= allInCostAB * config.entry_buffer_multiplier
 
   // Direction: buy B, sell A
   const rawBA = (tickA.bidPrice - tickB.askPrice) / tickB.askPrice * 100
   const netBA = rawBA - allInCostBA
   const oppBA =
-    netBA >= config.min_net_spread_pct &&
     netBA >= allInCostBA * config.entry_buffer_multiplier
 
   const cap = capitalUsdt ?? config.capital_per_trade_usdt

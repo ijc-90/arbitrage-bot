@@ -14,6 +14,5 @@ exchanges:
 
 capital_per_trade_usdt: 500
 entry_buffer_multiplier: 2.0
-min_net_spread_pct: 0.15
 slow_poll_interval_ms: 5000
 fast_poll_interval_ms: 200

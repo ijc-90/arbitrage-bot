@@ -48,6 +48,79 @@ Testing against real exchanges has proven faster and more reliable. The mock ser
 
 ---
 
+### Code hygiene — dead variable in detector.ts
+**File:** `arbitrage-detector/detector.ts` line 143.
+`hasPairSnapshots = volPerExchange.size === 0` is always `true` (map is freshly created at that point), logic is inverted vs. the name, and the variable is never read again. Delete this line. No functional impact.
+
+---
+
+### Security — re-enable TLS certificate validation in production
+**File:** `docker-compose.prod.yml`.
+`NODE_TLS_REJECT_UNAUTHORIZED=0` is set on all three services. This disables TLS verification for all outbound HTTPS calls to exchange APIs, enabling man-in-the-middle attacks that could spoof price feeds and produce false arbitrage signals. Remove this env var from all services. The `dashboard` service has no outbound API calls and especially does not need it.
+
+---
+
+### Config clarity — document or remove `min_net_spread_pct` redundancy
+With production values (`all_in_cost=0.28%`, `entry_buffer_multiplier=2.0`), the buffer threshold is `0.56%`, which always exceeds `min_net_spread_pct=0.15%`. The first entry condition is never binding. Either raise `min_net_spread_pct` to match the effective buffer threshold (so it acts as a meaningful sanity floor), or remove it and consolidate entry logic to a single threshold.
+
+---
+
+### Auto-Trading Gaps
+
+The following items surface from the gap analysis in `TRADING_REVIEW.md`. None are prerequisites for alarm-only operation, but all are required before any live execution engine could be built on this codebase.
+
+---
+
+#### AT-1: Exchange order placement APIs
+Add authenticated order submission to `ExchangeClient` for all three exchanges (Binance, Bybit, BingX). Requires API key management with HMAC-SHA256/ECDSA signing, `MARKET` and `LIMIT IOC/FOK` order types, fill confirmation via polling or WebSocket subscription, and cancel-on-miss logic for the open leg when the paired leg fails.
+
+---
+
+#### AT-2: Simultaneous dual-leg execution coordinator
+Build an `ExecutionCoordinator` that submits both legs in parallel (`Promise.all`) within a latency budget (target < 50ms). Must handle partial fills, one-leg failures (cancel or hedge the open leg), and idempotent client order IDs for safe retries.
+
+---
+
+#### AT-3: Pre-positioned capital inventory manager
+Track USDT and base-asset balances per exchange. Before accepting any execution opportunity, confirm free balance is sufficient on both the buy and sell sides. Trigger rebalancing when inventory imbalance exceeds a configured threshold. Without this, cross-exchange execution is impossible.
+
+---
+
+#### AT-4: WebSocket real-time price feeds
+Replace the REST polling loop with persistent WebSocket book-ticker streams for actively monitored pairs. REST polling at 5000ms (or even 200ms) is too slow for executable opportunities. Requires reconnect logic with exponential backoff and message integrity checks.
+
+---
+
+#### AT-5: Level-2 order book depth and dynamic slippage
+Fetch top N order book levels (not just best bid/ask) for each candidate pair. Walk the book to compute expected average fill price given the intended notional. Replace the fixed `slippage_estimate_pct` constant with a per-trade computed value. Add a minimum-depth guard that skips or reduces position size when available quantity at best price is below threshold.
+
+---
+
+#### AT-6: Position tracking and risk controls
+Add: maximum concurrent open positions, per-pair and per-exchange notional exposure limits, net delta tracking for partially-filled legs, per-trade stop-loss, maximum daily loss circuit breaker, and API rate-limit monitoring (Binance 1200 req/min weight budget). None of these exist today.
+
+---
+
+#### AT-7: Latency measurement and spread decay model
+Instrument the full timing chain: detection → order submission → fill confirmation. Measure how much of the detected spread remains at fill time. Raise `min_net_spread_pct` (or the buffer threshold) by at least the average spread decay between detection and fill. Add a staleness guard that declines to trade against prices older than a configured threshold.
+
+---
+
+#### AT-8: Withdrawal and transfer automation for capital rebalancing
+Model on-chain withdrawal fees (currently ignored entirely) and block confirmation times per asset/network. Add withdrawal API calls to `ExchangeClient`. Build a rebalancing trigger that batches withdrawals when inventory imbalance exceeds a threshold. Account for in-flight capital when computing available inventory.
+
+---
+
+#### AT-9: Realized PnL and fill audit log
+Extend the DB schema with a `fills` table: actual fill price, quantity, actual exchange fee, fill timestamp, and exchange order ID. Compute realized PnL as `(fill_sell * qty - fee_sell) - (fill_buy * qty + fee_buy)`. Reconcile periodically against exchange balance APIs to catch discrepancies.
+
+---
+
+#### AT-10: Operational reliability for live execution
+On restart, recover any PENDING orders by querying exchange order-status APIs. Add alerting (webhook/SMS/email) for circuit breaker triggers and unrecoverable errors. Add a heartbeat endpoint for external monitoring. Build a dry-run mode against exchange sandbox environments before enabling live capital.
+
+---
+
 ## Design decisions on record
 
 - **`capital_per_trade_usdt`** (config.yaml, default 500) is the hard maximum capital per trade. The actual deployed capital is `min(capital_per_trade_usdt, 0.1% of smaller exchange 24h volume)` — operating above 0.1% of daily volume risks meaningful price impact. This is computed per pair per cycle from `pair_snapshots` and passed into `computeSpread`. If volume data is unavailable the configured max is used.

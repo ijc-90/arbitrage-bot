@@ -1,7 +1,8 @@
 import { Config } from './config'
-import { ExchangeClient } from './exchangeClient'
+import { ExchangeClient, BookTick } from './exchangeClient'
 import { computeSpread } from './spreadEngine'
 import { Logger } from './logger'
+import { WsFeedManager } from './wsFeed'
 
 export interface LoopController {
   readonly hasSteps: boolean
@@ -39,7 +40,8 @@ export class OpportunityTracker {
     client: ExchangeClient,
     config: Config,
     logger: Logger,
-    controller: LoopController
+    controller: LoopController,
+    wsFeed: WsFeedManager | null = null
   ): Opportunity {
     const opp: Opportunity = {
       id: shortId(),
@@ -56,7 +58,7 @@ export class OpportunityTracker {
 
     const [exA, exB] = exchanges
 
-    setTimeout(() => this.poll(opp, exA, exB, client, config, logger, controller), config.fast_poll_interval_ms)
+    setTimeout(() => this.poll(opp, exA, exB, client, config, logger, controller, wsFeed), config.fast_poll_interval_ms)
     return opp
   }
 
@@ -67,15 +69,24 @@ export class OpportunityTracker {
     client: ExchangeClient,
     config: Config,
     logger: Logger,
-    controller: LoopController
+    controller: LoopController,
+    wsFeed: WsFeedManager | null
   ): void {
-    const fetchWithRetry = (retries: number): Promise<[import('./exchangeClient').BookTick, import('./exchangeClient').BookTick]> =>
-      client.getPairTicks(opp.pair, exchangeA, opp.pair, exchangeB).catch(err => {
-        if (retries > 0 && err?.cause?.code === 'UND_ERR_SOCKET') {
-          return new Promise(r => setTimeout(r, 200)).then(() => fetchWithRetry(retries - 1))
-        }
-        throw err
-      })
+    // Prefer WS tick; fall back to REST with retry for transient socket errors
+    const getTickWithFallback = (ex: string, sym: string): Promise<BookTick> => {
+      const wsTick = wsFeed?.getTick(ex, sym)
+      if (wsTick) return Promise.resolve(wsTick)
+      return client.getBookTicker(ex, sym)
+    }
+
+    const fetchWithRetry = (retries: number): Promise<[BookTick, BookTick]> =>
+      Promise.all([getTickWithFallback(exchangeA, opp.pair), getTickWithFallback(exchangeB, opp.pair)])
+        .catch(err => {
+          if (retries > 0 && err?.cause?.code === 'UND_ERR_SOCKET') {
+            return new Promise(r => setTimeout(r, 200)).then(() => fetchWithRetry(retries - 1))
+          }
+          throw err
+        })
 
     fetchWithRetry(2)
       .then(([tickA, tickB]) => {
@@ -87,7 +98,7 @@ export class OpportunityTracker {
           !isFinite(tickB.bidPrice) || tickB.bidPrice <= 0 ||
           !isFinite(tickB.askPrice) || tickB.askPrice <= 0
         ) {
-          setTimeout(() => this.poll(opp, exchangeA, exchangeB, client, config, logger, controller), config.fast_poll_interval_ms)
+          setTimeout(() => this.poll(opp, exchangeA, exchangeB, client, config, logger, controller, wsFeed), config.fast_poll_interval_ms)
           return
         }
         const result = computeSpread(exchangeA, tickA, exchangeB, tickB, config)
@@ -110,7 +121,7 @@ export class OpportunityTracker {
         if (controller.hasSteps) {
           controller.fastAdvance().then(() => {
             setTimeout(
-              () => this.poll(opp, exchangeA, exchangeB, client, config, logger, controller),
+              () => this.poll(opp, exchangeA, exchangeB, client, config, logger, controller, wsFeed),
               config.fast_poll_interval_ms
             )
           })

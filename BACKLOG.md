@@ -77,8 +77,14 @@ Track USDT and base-asset balances per exchange. Before accepting any execution 
 
 ---
 
-#### AT-4: WebSocket real-time price feeds
-Replace the REST polling loop with persistent WebSocket book-ticker streams for actively monitored pairs. REST polling at 5000ms (or even 200ms) is too slow for executable opportunities. Requires reconnect logic with exponential backoff and message integrity checks.
+#### ~~AT-4: WebSocket real-time price feeds~~ ✓ DONE
+`WsFeedManager` in `arbitrage-detector/wsFeed.ts`. Binance (combined-stream, 1024-symbol chunks) and Bybit (subscribe JSON + 20s ping) implemented. BingX deferred (gzip protocol). Exponential backoff reconnect (1s→30s). `getTick()` checks `staleness_threshold_ms` (config, default 2000ms); stale/missing → REST fallback. Detector caches qualifying pairs after REST discovery, then reads from WS cache each subsequent scan. Fast-path tracker (`opportunityTracker.ts`) also prefers WS tick. WsFeedManager only instantiated in production (`--steps` not set, WS URLs present). All 47 integration tests pass unchanged.
+
+**To enable:** add to `.env` or `.env.prod`:
+```
+BINANCE_WS_URL=wss://stream.binance.com:9443
+BYBIT_WS_URL=wss://stream.bybit.com
+```
 
 ---
 

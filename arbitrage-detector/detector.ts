@@ -6,6 +6,7 @@ import { computeSpread } from './spreadEngine'
 import { Logger } from './logger'
 import { OpportunityTracker, LoopController } from './opportunityTracker'
 import { initDb } from './db'
+import { WsFeedManager } from './wsFeed'
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -98,48 +99,105 @@ async function main(): Promise<void> {
     ? new StepController(steps, advanceUrl ?? 'http://localhost:3000')
     : new ContinuousController(config.slow_poll_interval_ms)
 
-  process.on('SIGINT', () => { logger.flush(); process.exit(0) })
-  process.on('SIGTERM', () => { logger.flush(); process.exit(0) })
+  // WS feeds only in production (no --steps) and only when WS URLs are configured
+  const wsFeed = (steps === null && Object.keys(env.wsUrls).length > 0)
+    ? new WsFeedManager(env.wsUrls, config.staleness_threshold_ms ?? 2000)
+    : null
+
+  process.on('SIGINT', () => { wsFeed?.disconnect(); logger.flush(); process.exit(0) })
+  process.on('SIGTERM', () => { wsFeed?.disconnect(); logger.flush(); process.exit(0) })
 
   const configuredExchanges = Object.keys(config.exchanges)
+
+  // Cached discovery state for WS mode: populated on first REST bulk scan, refreshed periodically
+  let cachedSymbolExchanges: Map<string, string[]> | null = null
+  let cachedQualifying: string[] | null = null
+  let lastDiscoveryAt = 0
+  const REDISCOVERY_INTERVAL_MS = 10 * 60 * 1000  // re-discover pairs every 10 minutes
 
   while (controller.hasSteps) {
     if (config.auto_pairs) {
       try {
-        // Bulk fetch — 1 API call per exchange
-        const tickerMaps = new Map<string, Map<string, BookTick>>()
-        for (const ex of configuredExchanges) {
-          tickerMaps.set(ex, await client.getAllBookTickers(ex))
+        const now = Date.now()
+        const needsDiscovery = !cachedQualifying || now - lastDiscoveryAt > REDISCOVERY_INTERVAL_MS
+
+        // ------------------------------------------------------------------
+        // Discovery pass: REST bulk fetch to find which symbols exist on 2+
+        // exchanges. Always runs on first iteration; repeats every 10 minutes.
+        // ------------------------------------------------------------------
+        let tickerMaps: Map<string, Map<string, BookTick>> | null = null
+        let symbolExchanges: Map<string, string[]>
+        let qualifying: string[]
+
+        if (needsDiscovery) {
+          tickerMaps = new Map<string, Map<string, BookTick>>()
+          for (const ex of configuredExchanges) {
+            tickerMaps.set(ex, await client.getAllBookTickers(ex))
+          }
+
+          const fetchSummary = configuredExchanges.map(ex => `${ex}:${tickerMaps!.get(ex)!.size}`).join(' ')
+          console.log(`[fetch] ${fetchSummary}`)
+
+          symbolExchanges = new Map<string, string[]>()
+          for (const [ex, tickers] of tickerMaps) {
+            for (const sym of tickers.keys()) {
+              if (!symbolExchanges.has(sym)) symbolExchanges.set(sym, [])
+              symbolExchanges.get(sym)!.push(ex)
+            }
+          }
+          const candidates = [...symbolExchanges.keys()].filter(sym => symbolExchanges.get(sym)!.length >= 2)
+
+          const minVol = config.auto_pairs.min_volume_usdt
+          qualifying = minVol > 0
+            ? candidates.filter(sym => meetsVolumeFloor(db, sym, minVol))
+            : candidates
+
+          console.log(`[auto] ${qualifying.length} pairs qualifying (${candidates.length} on 2+ exchanges, min_vol=${minVol})`)
+
+          cachedSymbolExchanges = symbolExchanges
+          cachedQualifying = qualifying
+          lastDiscoveryAt = now
+
+          // Subscribe WS feed to all qualifying pairs (no-op if wsFeed is null)
+          if (wsFeed) {
+            for (const ex of configuredExchanges) {
+              const symsForEx = qualifying.filter(sym => symbolExchanges.get(sym)!.includes(ex))
+              if (symsForEx.length > 0) wsFeed.subscribe(ex, symsForEx)
+            }
+          }
+        } else {
+          symbolExchanges = cachedSymbolExchanges!
+          qualifying = cachedQualifying!
         }
 
-        // Log per-exchange ticker counts for diagnostics
-        const fetchSummary = configuredExchanges.map(ex => `${ex}:${tickerMaps.get(ex)!.size}`).join(' ')
-        console.log(`[fetch] ${fetchSummary}`)
+        // ------------------------------------------------------------------
+        // For each qualifying pair, get ticks: WS cache first, REST fallback.
+        // On the discovery pass, tickerMaps (bulk REST) is used as the source.
+        // On subsequent passes (WS mode), individual REST calls are the fallback.
+        // ------------------------------------------------------------------
+        const stalenessMs = config.staleness_threshold_ms ?? 2000
 
-        // Build symbol → exchanges map: only need 2+ exchanges to arb
-        const symbolExchanges = new Map<string, string[]>()
-        for (const [ex, tickers] of tickerMaps) {
-          for (const sym of tickers.keys()) {
-            if (!symbolExchanges.has(sym)) symbolExchanges.set(sym, [])
-            symbolExchanges.get(sym)!.push(ex)
+        async function resolveTick(ex: string, sym: string): Promise<BookTick | null> {
+          // Try WS cache first
+          if (wsFeed) {
+            const wsTick = wsFeed.getTick(ex, sym)
+            if (wsTick) return wsTick
+          }
+          // Fall back to bulk REST data from this discovery pass
+          if (tickerMaps) {
+            const t = tickerMaps.get(ex)?.get(sym)
+            if (t) return t
+          }
+          // Fall back to individual REST call (WS stale/missing, non-discovery pass)
+          try {
+            return await client.getBookTicker(ex, sym)
+          } catch {
+            return null
           }
         }
-        const candidates = [...symbolExchanges.keys()].filter(sym => symbolExchanges.get(sym)!.length >= 2)
 
-        // Volume filter from pair_snapshots (skipped if min_volume_usdt = 0)
-        const minVol = config.auto_pairs.min_volume_usdt
-        const qualifying = minVol > 0
-          ? candidates.filter(sym => meetsVolumeFloor(db, sym, minVol))
-          : candidates
-
-        console.log(`[auto] ${qualifying.length} pairs qualifying (${candidates.length} on 2+ exchanges, min_vol=${minVol})`)
-
-        // Pre-load volume per (symbol, exchange) for capital sizing and completeness checks.
-        // effective_capital = min(config.capital_per_trade_usdt, 0.1% of smaller exchange 24h volume)
-        // We require BOTH exchanges to have volume data before logging or opening an opportunity.
-        // If pair_snapshots is empty (pair-fetcher hasn't run yet), volPerExchange is empty
-        // and the "both exchanges must have data" check is skipped (graceful startup).
-        const volPerExchange = new Map<string, Map<string, number>>()  // symbol → exchange → vol
+        // Pre-load volume per (symbol, exchange) for capital sizing
+        const volPerExchange = new Map<string, Map<string, number>>()
         try {
           const rows = db.prepare(`
             SELECT symbol, exchange, MAX(volume_24h_quote) AS max_vol
@@ -153,8 +211,6 @@ async function main(): Promise<void> {
           }
         } catch {}
 
-        // Track which exchanges have ANY volume data — we only require it for those.
-        // If pair-fetcher hasn't run for bingx yet, bingx rows are absent and we don't penalise bingx pairs.
         const exchangesWithVolumeData = new Set<string>()
         for (const exMap of volPerExchange.values()) {
           for (const ex of exMap.keys()) exchangesWithVolumeData.add(ex)
@@ -170,8 +226,6 @@ async function main(): Promise<void> {
             for (let j = i + 1; j < symExs.length; j++) {
               const exA = symExs[i], exB = symExs[j]
 
-              // Require volume data only for exchanges that have it in pair_snapshots.
-              // Exchanges not yet fetched by pair-fetcher are not excluded.
               if (exchangesWithVolumeData.size > 0) {
                 const symVols = volPerExchange.get(sym)
                 const missingA = exchangesWithVolumeData.has(exA) && !symVols?.has(exA)
@@ -179,9 +233,9 @@ async function main(): Promise<void> {
                 if (missingA || missingB) continue
               }
 
-              const tickA = tickerMaps.get(exA)!.get(sym)!
-              const tickB = tickerMaps.get(exB)!.get(sym)!
-              // Skip zero or non-finite prices (suspended/delisted pairs)
+              const [tickA, tickB] = await Promise.all([resolveTick(exA, sym), resolveTick(exB, sym)])
+              if (!tickA || !tickB) continue
+
               if (
                 tickA.bidPrice <= 0 || tickA.askPrice <= 0 ||
                 tickB.bidPrice <= 0 || tickB.askPrice <= 0 ||
@@ -189,7 +243,6 @@ async function main(): Promise<void> {
                 !isFinite(tickB.bidPrice) || !isFinite(tickB.askPrice)
               ) continue
 
-              // Effective capital = min(configured max, 0.1% of smaller exchange's volume)
               const symVols = volPerExchange.get(sym)
               const volA = symVols?.get(exA)
               const volB = symVols?.get(exB)
@@ -198,14 +251,14 @@ async function main(): Promise<void> {
                 : config.capital_per_trade_usdt
 
               const s = computeSpread(exA, tickA, exB, tickB, config, effectiveCapital)
-              if (Math.abs(s.netSpreadPct) > 100) continue  // symbol collision
+              if (Math.abs(s.netSpreadPct) > 100) continue
               if (!best || s.netSpreadPct > best.netSpreadPct) best = s
             }
           }
           if (best) spreads.push({ sym, spread: best })
         }
 
-        // Phase 2: log all prices in one transaction (single commit)
+        // Phase 2: log all prices in one transaction
         db.transaction(() => {
           for (const { sym, spread } of spreads) {
             logger.logPrice(sym, spread)
@@ -215,7 +268,7 @@ async function main(): Promise<void> {
         // Phase 3: check for opportunities (outside transaction)
         for (const { sym, spread } of spreads) {
           if (spread.isOpportunity && !tracker.hasOpenOpportunity()) {
-            const opp = tracker.open(spread, sym, [spread.exchangeBuy, spread.exchangeSell], client, config, logger, controller)
+            const opp = tracker.open(spread, sym, [spread.exchangeBuy, spread.exchangeSell], client, config, logger, controller, wsFeed)
             logger.logOpportunityOpened(opp)
           }
         }
@@ -231,7 +284,7 @@ async function main(): Promise<void> {
         logger.logPrice(pair.symbol, spread)
 
         if (spread.isOpportunity && !tracker.hasOpenOpportunity()) {
-          const opp = tracker.open(spread, pair.symbol, [exA, exB], client, config, logger, controller)
+          const opp = tracker.open(spread, pair.symbol, [exA, exB], client, config, logger, controller, wsFeed)
           logger.logOpportunityOpened(opp)
         }
       }

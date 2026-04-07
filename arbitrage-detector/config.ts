@@ -25,10 +25,12 @@ export interface Config {
   entry_buffer_multiplier: number
   slow_poll_interval_ms: number
   fast_poll_interval_ms: number
+  staleness_threshold_ms?: number  // max age of a WS tick before falling back to REST (default 2000)
 }
 
 export interface Env {
   exchangeUrls: Record<string, string>
+  wsUrls: Record<string, string>
 }
 
 export function loadConfig(configPath: string): Config {
@@ -42,11 +44,15 @@ export function loadEnv(): Env {
   dotenv.config({ path: envPath })
 
   const exchangeUrls: Record<string, string> = {}
+  const wsUrls: Record<string, string> = {}
   for (const [key, value] of Object.entries(process.env)) {
-    if (key.endsWith('_URL') && value) {
+    if (key.endsWith('_WS_URL') && value) {
+      const exchange = key.slice(0, -7).toLowerCase()
+      wsUrls[exchange] = value
+    } else if (key.endsWith('_URL') && value) {
       const exchange = key.slice(0, -4).toLowerCase()
       exchangeUrls[exchange] = value
     }
   }
-  return { exchangeUrls }
+  return { exchangeUrls, wsUrls }
 }

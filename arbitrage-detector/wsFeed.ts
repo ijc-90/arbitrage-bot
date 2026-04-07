@@ -10,6 +10,15 @@ const BACKOFF_CAP_MS = 30000
 const BINANCE_STREAM_LIMIT = 1024  // max streams per combined-stream connection
 const BYBIT_PING_INTERVAL_MS = 20000
 
+export type WsExchangeState = 'connected' | 'reconnecting' | 'not_configured'
+
+export interface WsExchangeStatus {
+  state: WsExchangeState
+  tickCount: number
+  lastTickAt: number | null  // ms timestamp, null if no ticks received yet
+  subscribedSymbols: number
+}
+
 export class WsFeedManager {
   private ticks = new Map<string, LiveTick>()         // key: `${exchange}:${symbol}`
   private sockets = new Map<string, WebSocket[]>()    // exchange → connections (Binance may need multiple)
@@ -17,11 +26,28 @@ export class WsFeedManager {
   private backoff = new Map<string, number>()
   private pingTimers = new Map<string, NodeJS.Timeout[]>()
   private stopped = false
+  private connState = new Map<string, WsExchangeState>()
+  private tickCount = new Map<string, number>()
+  private lastTickAt = new Map<string, number>()
 
   constructor(
     private readonly wsUrls: Record<string, string>,
     private readonly stalenessMs: number
   ) {}
+
+  /** Returns live connection status for each configured exchange. */
+  getStatus(): Record<string, WsExchangeStatus> {
+    const result: Record<string, WsExchangeStatus> = {}
+    for (const ex of Object.keys(this.wsUrls)) {
+      result[ex] = {
+        state: this.connState.get(ex) ?? 'reconnecting',
+        tickCount: this.tickCount.get(ex) ?? 0,
+        lastTickAt: this.lastTickAt.get(ex) ?? null,
+        subscribedSymbols: this.subs.get(ex)?.size ?? 0,
+      }
+    }
+    return result
+  }
 
   /**
    * Register symbols to subscribe for an exchange. Safe to call multiple times;
@@ -111,9 +137,15 @@ export class WsFeedManager {
     this.sockets.set('binance', newSockets)
   }
 
+  private recordTick(exchange: string): void {
+    this.tickCount.set(exchange, (this.tickCount.get(exchange) ?? 0) + 1)
+    this.lastTickAt.set(exchange, Date.now())
+  }
+
   private setupBinanceSocket(ws: WebSocket): void {
     ws.on('open', () => {
       this.backoff.set('binance', BACKOFF_BASE_MS)
+      this.connState.set('binance', 'connected')
       console.log('[ws:binance] connected')
     })
 
@@ -132,6 +164,7 @@ export class WsFeedManager {
           lastUpdatedAt: Date.now(),
         }
         this.ticks.set(`binance:${d.s}`, tick)
+        this.recordTick('binance')
       } catch {}
     })
 
@@ -141,6 +174,7 @@ export class WsFeedManager {
 
     ws.on('close', () => {
       if (this.stopped) return
+      this.connState.set('binance', 'reconnecting')
       console.log('[ws:binance] disconnected — reconnecting')
       this.scheduleReconnect('binance')
     })
@@ -165,6 +199,7 @@ export class WsFeedManager {
 
     ws.on('open', () => {
       this.backoff.set('bybit', BACKOFF_BASE_MS)
+      this.connState.set('bybit', 'connected')
       console.log('[ws:bybit] connected')
 
       // Subscribe to book-ticker topics for all symbols
@@ -199,11 +234,13 @@ export class WsFeedManager {
           lastUpdatedAt: Date.now(),
         }
         this.ticks.set(`bybit:${sym}`, tick)
+        this.recordTick('bybit')
       } catch {}
     })
 
     ws.on('close', () => {
       if (this.stopped) return
+      this.connState.set('bybit', 'reconnecting')
       console.log('[ws:bybit] disconnected — reconnecting')
       this.scheduleReconnect('bybit')
     })

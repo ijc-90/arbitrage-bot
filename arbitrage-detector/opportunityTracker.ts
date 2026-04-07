@@ -117,6 +117,16 @@ export class OpportunityTracker {
           return
         }
 
+        // Timeout guard: if the opportunity has been open too long, force-close it.
+        // Prevents frozen prices (e.g. stale BingX data) from keeping an opportunity open forever.
+        const maxDurationMs = config.max_opportunity_duration_ms ?? 300_000
+        if (Date.now() - opp.openedAt > maxDurationMs) {
+          console.warn(`[tracker] ${opp.id} ${opp.pair} exceeded max duration ${maxDurationMs}ms — closing as TIMEOUT`)
+          logger.logOpportunityClosed(opp, 'TIMEOUT')
+          this.current = null
+          return
+        }
+
         // still open — advance scenario (test only), then schedule next fast poll
         if (controller.hasSteps) {
           controller.fastAdvance().then(() => {

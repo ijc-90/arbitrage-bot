@@ -109,6 +109,17 @@ async function main(): Promise<void> {
 
   const configuredExchanges = Object.keys(config.exchanges)
 
+  // Log WS status every 60s so you can see connection health in the logs
+  if (wsFeed) {
+    setInterval(() => {
+      const status = wsFeed.getStatus()
+      for (const [ex, s] of Object.entries(status)) {
+        const age = s.lastTickAt ? `${Math.round((Date.now() - s.lastTickAt) / 1000)}s ago` : 'never'
+        console.log(`[ws:${ex}] ${s.state}  subs=${s.subscribedSymbols}  ticks=${s.tickCount}  lastTick=${age}`)
+      }
+    }, 60_000)
+  }
+
   // Cached discovery state for WS mode: populated on first REST bulk scan, refreshed periodically
   let cachedSymbolExchanges: Map<string, string[]> | null = null
   let cachedQualifying: string[] | null = null
@@ -251,7 +262,12 @@ async function main(): Promise<void> {
                 : config.capital_per_trade_usdt
 
               const s = computeSpread(exA, tickA, exB, tickB, config, effectiveCapital)
-              if (Math.abs(s.netSpreadPct) > 100) continue
+              if (Math.abs(s.netSpreadPct) > 100) continue  // symbol collision / clearly bad data
+              const maxSpread = config.max_net_spread_pct ?? 20
+              if (s.netSpreadPct > maxSpread) {
+                console.warn(`[skip] ${sym} ${exA}→${exB} spread ${s.netSpreadPct.toFixed(2)}% exceeds max_net_spread_pct=${maxSpread} — likely bad price data`)
+                continue
+              }
               if (!best || s.netSpreadPct > best.netSpreadPct) best = s
             }
           }

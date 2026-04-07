@@ -16,4 +16,6 @@ capital_per_trade_usdt: 500
 entry_buffer_multiplier: 2.0
 slow_poll_interval_ms: 5000
 fast_poll_interval_ms: 200
-staleness_threshold_ms: 2000  # fall back to REST if WS tick older than this
+staleness_threshold_ms: 2000       # fall back to REST if WS tick older than this
+max_net_spread_pct: 20             # ignore opportunities above this spread — almost always bad data
+max_opportunity_duration_ms: 300000  # force-close stuck opportunity after 5 min (safeguard against frozen prices)

@@ -25,7 +25,9 @@ export interface Config {
   entry_buffer_multiplier: number
   slow_poll_interval_ms: number
   fast_poll_interval_ms: number
-  staleness_threshold_ms?: number  // max age of a WS tick before falling back to REST (default 2000)
+  staleness_threshold_ms?: number       // max age of a WS tick before falling back to REST (default 2000)
+  max_net_spread_pct?: number           // reject opportunities above this spread as bad data (default 20)
+  max_opportunity_duration_ms?: number  // force-close stuck opportunities after this duration (default 300000)
 }
 
 export interface Env {

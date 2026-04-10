@@ -4,12 +4,6 @@ import { computeSpread } from './spreadEngine'
 import { Logger } from './logger'
 import { WsFeedManager } from './wsFeed'
 
-export interface LoopController {
-  readonly hasSteps: boolean
-  advance(): Promise<void>
-  fastAdvance(): Promise<void>  // no-op in prod, scenario-advance in test
-}
-
 export interface Opportunity {
   id: string
   pair: string
@@ -40,7 +34,6 @@ export class OpportunityTracker {
     client: ExchangeClient,
     config: Config,
     logger: Logger,
-    controller: LoopController,
     wsFeed: WsFeedManager | null = null
   ): Opportunity {
     const opp: Opportunity = {
@@ -58,7 +51,7 @@ export class OpportunityTracker {
 
     const [exA, exB] = exchanges
 
-    setTimeout(() => this.poll(opp, exA, exB, client, config, logger, controller, wsFeed), config.fast_poll_interval_ms)
+    setTimeout(() => this.poll(opp, exA, exB, client, config, logger, wsFeed), config.fast_poll_interval_ms)
     return opp
   }
 
@@ -69,7 +62,6 @@ export class OpportunityTracker {
     client: ExchangeClient,
     config: Config,
     logger: Logger,
-    controller: LoopController,
     wsFeed: WsFeedManager | null
   ): void {
     // Prefer WS tick; fall back to REST with retry for transient socket errors
@@ -98,7 +90,7 @@ export class OpportunityTracker {
           !isFinite(tickB.bidPrice) || tickB.bidPrice <= 0 ||
           !isFinite(tickB.askPrice) || tickB.askPrice <= 0
         ) {
-          setTimeout(() => this.poll(opp, exchangeA, exchangeB, client, config, logger, controller, wsFeed), config.fast_poll_interval_ms)
+          setTimeout(() => this.poll(opp, exchangeA, exchangeB, client, config, logger, wsFeed), config.fast_poll_interval_ms)
           return
         }
         const result = computeSpread(exchangeA, tickA, exchangeB, tickB, config)
@@ -127,16 +119,11 @@ export class OpportunityTracker {
           return
         }
 
-        // still open — advance scenario (test only), then schedule next fast poll
-        if (controller.hasSteps) {
-          controller.fastAdvance().then(() => {
-            setTimeout(
-              () => this.poll(opp, exchangeA, exchangeB, client, config, logger, controller, wsFeed),
-              config.fast_poll_interval_ms
-            )
-          })
-        }
-        // if no steps: just return, no close event
+        // still open — schedule next fast poll
+        setTimeout(
+          () => this.poll(opp, exchangeA, exchangeB, client, config, logger, wsFeed),
+          config.fast_poll_interval_ms
+        )
       })
       .catch(err => {
         console.error('Opportunity poll error:', err)

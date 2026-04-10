@@ -17,6 +17,7 @@ Alarm-only cross-exchange arbitrage detector. Tracks what's built, what's next, 
 - **Dynamic pair detection** — detector uses bulk ticker endpoints (`GET /api/v3/ticker/bookTicker` for Binance, `GET /v5/market/tickers?category=spot` for Bybit) to fetch all pairs in 2 API calls per slow cycle; computes intersection of symbols present on all configured exchanges; filters by `min_volume_usdt` from `pair_snapshots` (skips filter if table empty — graceful startup); logs spread for every qualifying pair each cycle; when opportunity opens, `OpportunityTracker` fast-path polls only that pair at `fast_poll_interval_ms`; static `pairs:` in config still supported for test mode
 - **Dead variable removed** — `hasPairSnapshots` in `detector.ts` was always `true` at assignment, never read, and had an inverted name. Deleted.
 - **`min_net_spread_pct` removed** — redundant entry condition eliminated from `spreadEngine.ts`, `config.ts`, both config YAMLs, and tests. Entry is now gated solely by `net >= all_in_cost * entry_buffer_multiplier`. The removed condition was never binding (buffer threshold always exceeded it in both prod and test configs).
+- **Mock server and scenario infrastructure removed** — `mock-exchanges/`, `scenarios/`, `arbitrage-detector/tests/`, `config.test.yaml`, `StepController`, `ContinuousController`, `LoopController`, `fastAdvance()`, `--steps`, `--advance-url` all deleted. Detector is now continuous-only. Testing approach TBD.
 
 ---
 
@@ -34,11 +35,6 @@ Per-exchange granularity: track `lastSuccessfulFetchAt` per exchange in `Exchang
 Dashboard impact: show duration as a range (`12ms – 5.2s`) when resolution is low, rather than a single misleading number.
 
 Schema columns to add to `opportunities`: `open_resolution_ms INTEGER`, `close_resolution_ms INTEGER`.
-
----
-
-### Remove mock server and scenario infrastructure
-Testing against real exchanges has proven faster and more reliable. The mock server (`mock-exchanges/`), scenario YAML files (`scenarios/`), `StepController` / `fastAdvance()` / `--steps` / `--advance-url` CLI flags, and integration test suites can all be deleted. The detector should become continuous-only (`ContinuousController`). Do not maintain backward compatibility with this infrastructure going forward.
 
 ---
 

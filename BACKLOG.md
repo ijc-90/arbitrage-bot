@@ -20,13 +20,13 @@ Alarm-only cross-exchange arbitrage detector. Tracks what's built, what's next, 
 - **Mock server and scenario infrastructure removed** — `mock-exchanges/`, `scenarios/`, `arbitrage-detector/tests/`, `config.test.yaml`, `StepController`, `ContinuousController`, `LoopController`, `fastAdvance()`, `--steps`, `--advance-url` all deleted. Detector is now continuous-only. Testing approach TBD.
 - **TLS certificate validation re-enabled** — removed `NODE_TLS_REJECT_UNAUTHORIZED=0` from `docker-compose.prod.yml` (was set on `detector` and `pair-fetcher`). All outbound HTTPS calls to exchange APIs now validate certificates.
 - **Timing resolution** — `open_resolution_ms` and `close_resolution_ms` added to `opportunities` table. `open_resolution_ms`: gap since the symbol was last scanned before detection (NULL on first scan after startup). `close_resolution_ms`: gap between the penultimate fast-poll and the convergence-detection poll (≈ `fast_poll_interval_ms`). DB migration in `initDb()` handles existing DBs via `ALTER TABLE`. Dashboard shows duration as a range (`3.2s – 5.0s`) when `open_resolution_ms > 500ms`, single value otherwise.
+- **Price retention** — `prices` table pruned to a configurable rolling window (`price_retention_hours`, default 6h) on startup and every hour. `VACUUM` runs after each prune to reclaim disk. `0` disables pruning. `ticks` and `opportunities` kept forever.
 
 ---
 
 ## Backlog
 
 ### Dashboard enhancements (remaining)
-- Price history retention policy — rolling window or prune by age to keep DB size bounded
 - **Pair volume section** — surface `pair_snapshots` data: show 24h USDT volume per pair/exchange, flag pairs where our capital would exceed X% of daily volume (configurable threshold)
 - **Pair view** — a dedicated view showing all symbols (BTC/USDT, ETH/USDT, …) with each symbol's routes listed beneath it (e.g. BTCUSDT: binance↔bybit, binance↔bingx, bybit↔bingx). Lets you compare spread performance across routes for the same symbol. Terminology: **pair** = two assets (BTCUSDT); **route** = a specific pair traded across two exchanges.
 

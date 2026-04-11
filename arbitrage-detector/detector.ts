@@ -52,6 +52,20 @@ async function main(): Promise<void> {
     `UPDATE opportunities SET close_reason = 'ABANDONED', closed_at_ms = ?, duration_ms = ? - opened_at_ms WHERE close_reason IS NULL`
   ).run(now, now)
 
+  const retentionHours = config.price_retention_hours ?? 6
+  function prunePrices(): void {
+    if (retentionHours <= 0) return
+    const cutoff = Date.now() - retentionHours * 60 * 60 * 1000
+    const { changes } = db.prepare(`DELETE FROM prices WHERE fetched_at_ms < ?`).run(cutoff)
+    if (changes > 0) {
+      console.log(`[prune] deleted ${changes} price rows older than ${retentionHours}h`)
+      db.exec('VACUUM')
+    }
+  }
+
+  prunePrices()
+  setInterval(prunePrices, 60 * 60 * 1000)
+
   const client = new ExchangeClient(env, db)
   const logger = new Logger(logsDir, db)
   const tracker = new OpportunityTracker()

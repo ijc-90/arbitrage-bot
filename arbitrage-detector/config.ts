@@ -28,6 +28,7 @@ export interface Config {
   staleness_threshold_ms?: number       // max age of a WS tick before falling back to REST (default 2000)
   max_net_spread_pct?: number           // reject opportunities above this spread as bad data (default 20)
   max_opportunity_duration_ms?: number  // force-close stuck opportunities after this duration (default 300000)
+  price_retention_hours?: number        // prune prices older than this; 0 = keep forever (default 6)
 }
 
 export interface Env {

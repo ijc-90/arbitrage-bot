@@ -11,7 +11,8 @@ export interface Opportunity {
   exchangeSell: string
   openedAt: number
   openResolutionMs: number | null
-  peakSpreadPct: number
+  entrySpreadPct: number   // spread at the moment of detection — immutable
+  peakSpreadPct: number    // running maximum, updated each poll
   estimatedPnlUsdt: number
   askBuy: number
   bidSell: number
@@ -46,6 +47,7 @@ export class OpportunityTracker {
       exchangeSell: spread.exchangeSell,
       openedAt: Date.now(),
       openResolutionMs,
+      entrySpreadPct: spread.netSpreadPct,
       peakSpreadPct: spread.netSpreadPct,
       estimatedPnlUsdt: spread.estimatedPnlUsdt,
       askBuy: spread.askBuy,

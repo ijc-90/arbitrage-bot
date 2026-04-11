@@ -75,7 +75,7 @@ export class Logger {
       exchange_sell: opp.exchangeSell,
       ask_buy: opp.askBuy,
       bid_sell: opp.bidSell,
-      net_spread_pct: opp.peakSpreadPct,
+      net_spread_pct: opp.entrySpreadPct,
       estimated_pnl_usdt: opp.estimatedPnlUsdt,
       open_resolution_ms: opp.openResolutionMs,
     })
@@ -88,7 +88,7 @@ export class Logger {
       open_resolution_ms: opp.openResolutionMs ?? null,
       ask_buy: opp.askBuy,
       bid_sell: opp.bidSell,
-      net_spread_pct: opp.peakSpreadPct,
+      net_spread_pct: opp.entrySpreadPct,
       peak_spread_pct: opp.peakSpreadPct,
       estimated_pnl_usdt: opp.estimatedPnlUsdt,
     })

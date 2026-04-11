@@ -1076,6 +1076,98 @@ app.get('/api/opportunity/:id', (req, res) => {
   }
 })
 
+app.get('/api/risk', (_req, res) => {
+  const db = openDb(dbPath)
+  if (!db) { res.status(503).json({ error: 'Database not available yet' }); return }
+  try {
+    let settings: { key: string; value: string }[] = []
+    try { settings = db.prepare(`SELECT key, value FROM detector_settings`).all() as { key: string; value: string }[] } catch {}
+    const get = (k: string, fallback: string = '') => settings.find(s => s.key === k)?.value ?? fallback
+
+    const execEnabled = get('execution_enabled', '0') === '1'
+    const halted = get('risk_halted', '0') === '1'
+    const openPositions = parseInt(get('risk_open_positions', '0'), 10)
+    const dailyRealizedPnl = parseFloat(get('risk_daily_pnl', '0'))
+    const haltReason = get('risk_halt_reason', '')
+
+    const realizedStats = (() => {
+      try {
+        return db.prepare(`
+          SELECT
+            COUNT(*) AS total_executions,
+            COALESCE(SUM(CASE WHEN status = 'FILLED' THEN realized_pnl_usdt ELSE 0 END), 0) AS total_realized_pnl,
+            COALESCE(SUM(CASE WHEN status = 'PARTIAL_FILL' THEN 1 ELSE 0 END), 0) AS partial_fills,
+            COALESCE(SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END), 0) AS failed
+          FROM executions
+        `).get() as Record<string, number>
+      } catch { return { total_executions: 0, total_realized_pnl: 0, partial_fills: 0, failed: 0 } }
+    })()
+
+    res.json({
+      execution_enabled: execEnabled,
+      halted,
+      halt_reason: haltReason,
+      open_positions: openPositions,
+      daily_realized_pnl: dailyRealizedPnl,
+      ...realizedStats,
+    })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  } finally {
+    db.close()
+  }
+})
+
+app.get('/health', (_req, res) => {
+  const db = openDb(dbPath)
+  if (!db) {
+    res.status(503).json({ status: 'no_db', message: 'database not available' })
+    return
+  }
+  try {
+    let settings: { key: string; value: string }[] = []
+    try { settings = db.prepare(`SELECT key, value FROM detector_settings`).all() as { key: string; value: string }[] } catch {}
+    const get = (k: string, fallback: string = '') => settings.find(s => s.key === k)?.value ?? fallback
+
+    const lastHeartbeatMs = parseInt(get('last_heartbeat_ms', '0'), 10) || null
+    const startupAtMs = parseInt(get('startup_at_ms', '0'), 10) || null
+    const halted = get('risk_halted', '0') === '1'
+    const heartbeatAgeMs = lastHeartbeatMs ? Date.now() - lastHeartbeatMs : null
+    const detectorStale = heartbeatAgeMs != null && heartbeatAgeMs > 90_000  // > 3 missed heartbeats
+
+    const lastOppMs = (() => {
+      try {
+        const r = db.prepare(`SELECT MAX(opened_at_ms) AS ts FROM opportunities`).get() as { ts: number | null }
+        return r?.ts ?? null
+      } catch { return null }
+    })()
+
+    const lastExecMs = (() => {
+      try {
+        const r = db.prepare(`SELECT MAX(executed_at_ms) AS ts FROM executions`).get() as { ts: number | null }
+        return r?.ts ?? null
+      } catch { return null }
+    })()
+
+    const status = halted ? 'halted' : detectorStale ? 'stale' : 'ok'
+    const uptimeSeconds = startupAtMs ? Math.round((Date.now() - startupAtMs) / 1000) : null
+
+    res.status(status === 'ok' || status === 'halted' ? 200 : 503).json({
+      status,
+      halted,
+      uptime_seconds: uptimeSeconds,
+      last_heartbeat_ms: lastHeartbeatMs,
+      last_heartbeat_age_ms: heartbeatAgeMs,
+      last_opportunity_at: lastOppMs ? new Date(lastOppMs).toISOString() : null,
+      last_execution_at: lastExecMs ? new Date(lastExecMs).toISOString() : null,
+    })
+  } catch (err: any) {
+    res.status(500).json({ status: 'error', error: err.message })
+  } finally {
+    db.close()
+  }
+})
+
 app.listen(port, () => {
   console.log(`Dashboard running at http://localhost:${port}`)
   console.log(`Reading DB: ${dbPath}`)

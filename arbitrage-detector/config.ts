@@ -30,6 +30,17 @@ export interface Config {
   max_opportunity_duration_ms?: number  // force-close stuck opportunities after this duration (default 300000)
   price_retention_hours?: number        // prune prices older than this; 0 = keep forever (default 6)
   liquidity_flag_threshold_pct?: number // flag routes where capital > this % of min exchange daily volume (default 0.1)
+  execution_enabled?: boolean           // set true to enable live order placement; false = alarm-only (default false)
+  max_execution_age_ms?: number         // reject execution if opportunity is older than this (default 500)
+  max_concurrent_positions?: number     // max simultaneous open trades (default 1)
+  max_notional_per_exchange_usdt?: number  // max USDT committed to any one exchange at once (default 1000)
+  max_daily_loss_usdt?: number          // halt when daily realized loss exceeds this (default 50)
+  max_drawdown_pct?: number             // halt when session drawdown % of (capital*10) exceeds this (default 5)
+  order_book_depth?: number             // L2 levels to fetch for slippage computation (default 10)
+  min_fill_ratio?: number               // skip execution if book can only fill < this fraction (default 0.9)
+  reconciliation_interval_hours?: number  // how often to run balance reconciliation (default 4)
+  reconciliation_tolerance_pct?: number   // warn when PnL vs balance diverges by > this % (default 0.5)
+  dry_run_sandbox?: boolean             // log [DRY-RUN] prefix on all order calls (default false)
 }
 
 export interface ApiKey {

@@ -16,6 +16,7 @@ export interface Opportunity {
   estimatedPnlUsdt: number
   askBuy: number
   bidSell: number
+  effectiveCapital: number // volume-capped capital used for this opportunity — used in poll() PnL
 }
 
 function shortId(): string {
@@ -38,7 +39,8 @@ export class OpportunityTracker {
     config: Config,
     logger: Logger,
     wsFeed: WsFeedManager | null = null,
-    openResolutionMs: number | null = null
+    openResolutionMs: number | null = null,
+    effectiveCapital: number = config.capital_per_trade_usdt,
   ): Opportunity {
     const opp: Opportunity = {
       id: shortId(),
@@ -52,6 +54,7 @@ export class OpportunityTracker {
       estimatedPnlUsdt: spread.estimatedPnlUsdt,
       askBuy: spread.askBuy,
       bidSell: spread.bidSell,
+      effectiveCapital,
     }
     this.current = opp
     this.lastPollAt = Date.now()
@@ -103,7 +106,7 @@ export class OpportunityTracker {
           setTimeout(() => this.poll(opp, exchangeA, exchangeB, client, config, logger, wsFeed), config.fast_poll_interval_ms)
           return
         }
-        const result = computeSpread(exchangeA, tickA, exchangeB, tickB, config)
+        const result = computeSpread(exchangeA, tickA, exchangeB, tickB, config, opp.effectiveCapital)
         logger.logOpportunityTick(opp.id, result)
 
         // Track peak spread for visibility but keep PnL at entry value —

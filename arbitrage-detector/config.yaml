@@ -21,3 +21,21 @@ max_net_spread_pct: 20             # ignore opportunities above this spread — 
 max_opportunity_duration_ms: 300000  # force-close stuck opportunity after 5 min (safeguard against frozen prices)
 price_retention_hours: 6             # prune prices table to this rolling window; 0 = keep forever
 liquidity_flag_threshold_pct: 0.1   # flag routes where capital exceeds 0.1% of smallest exchange's daily volume
+execution_enabled: false             # set true to enable live order placement; requires API keys + risk controls
+max_execution_age_ms: 500            # reject execution if opportunity detected > this many ms ago
+
+# Risk controls (AT-6) — required before deploying real capital
+max_concurrent_positions: 1          # maximum simultaneous open trades
+max_notional_per_exchange_usdt: 1000 # max USDT committed to any one exchange at once
+max_daily_loss_usdt: 50              # circuit breaker: halt when daily loss exceeds this
+max_drawdown_pct: 5                  # circuit breaker: halt when session drawdown > 5% of (capital_per_trade * 10)
+
+# Order book depth (AT-5)
+order_book_depth: 10                 # L2 levels to fetch per side for slippage computation
+min_fill_ratio: 0.9                  # skip trade if < 90% of notional can be filled at current book depth
+
+# Reconciliation (AT-9)
+reconciliation_interval_hours: 4     # how often to compare realized PnL vs actual balance delta
+reconciliation_tolerance_pct: 0.5    # warn if divergence exceeds 0.5% of cumulative PnL
+
+dry_run_sandbox: false               # when true, logs [DRY-RUN] on order calls; use testnet URLs in .env

@@ -85,6 +85,13 @@ export class InventoryManager {
     setInterval(() => this.refreshAll(), this.REFRESH_INTERVAL_MS)
   }
 
+  // Return a copy of the full balance cache (all exchanges).
+  getAllBalances(): Map<string, Record<string, number>> {
+    const out = new Map<string, Record<string, number>>()
+    for (const [ex, b] of this.cache) out.set(ex, { ...b })
+    return out
+  }
+
   // Log a summary of cached balances (useful for startup diagnostics).
   logSummary(): void {
     if (this.cache.size === 0) {

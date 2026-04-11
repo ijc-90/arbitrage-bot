@@ -37,6 +37,14 @@ Alarm-only cross-exchange arbitrage detector. Tracks what's built, what's next, 
 
 Priority order based on domain review (2026-04-11). Hard dependency chain: AT-7 → AT-3 → AT-1 → AT-6 → AT-2 → AT-5 → AT-9 → AT-10 → AT-8.
 
+#### New gaps identified 2026-04-11 (not yet addressed in AT items below)
+
+- **`effectiveCapital` not threaded into `OpportunityTracker.poll()`** — `computeSpread()` in the fast-path poll is called without the `capitalUsdt` override, so tick-level PnL uses full `capital_per_trade_usdt` even when volume cap reduced it at open. Harmless now (ticks table doesn't store PnL), but fix in AT-2: store `effectiveCapital` on the `Opportunity` object at open and pass it into every `poll()` call. File: `arbitrage-detector/opportunityTracker.ts` ~line 93.
+- **Max drawdown limit missing from AT-6 risk spec** — AT-6 plans a daily loss circuit breaker but not a peak-balance drawdown halt. Add `max_drawdown_pct` (default 5%) to `RiskManager`: halt when `(peak_balance - current_balance) / peak_balance > max_drawdown_pct`. Add to `config.yaml` alongside `max_daily_loss_usdt`.
+- **BingX order signing method unverified** — current code uses HMAC-SHA256 for BingX balance queries (working). BingX newer V3 order endpoints may require Ed25519 / ECDSA instead. Verify against BingX API docs at AT-1 implementation time before assuming HMAC-SHA256 works for `POST /openApi/spot/v1/trade/order`.
+- **WS sequence number integrity not checked** — `wsFeed.ts` reconnects on close/error but does not validate message sequence numbers. On fast reconnect, a gap could silently skip a price tick used at execution time. Fix in AT-4 follow-up: track `u` (last update ID) on Binance bookTicker messages; log a warning on sequence gap after reconnect.
+- **KYC tier withdrawal ceiling not modeled** — AT-8 rebalancing assumes withdrawals are freely available; exchange KYC tier caps 24h withdrawal limits. Before enabling AT-8, verify limits match intended capital scale. Add `max_withdrawal_usdt_per_day` per exchange to config; `InventoryManager.rebalance()` must respect it.
+
 ---
 
 #### ~~AT-4: WebSocket real-time price feeds~~ ✓ DONE
@@ -60,33 +68,35 @@ BYBIT_WS_URL=wss://stream.bybit.com
 
 ---
 
-#### AT-1: Exchange order placement APIs
-Add authenticated order submission to `ExchangeClient` for all three exchanges (Binance, Bybit, BingX). Requires API key management with HMAC-SHA256 signing, `MARKET` and `LIMIT IOC/FOK` order types, fill confirmation via polling or WebSocket user-stream, and cancel-on-miss logic for the open leg when the paired leg fails. Use idempotent client order IDs (UUID) on every order for safe retry.
+#### ~~AT-1: Exchange order placement APIs~~ ✓ DONE
+`placeOrder`, `cancelOrder`, `getOrderStatus` added to `ExchangeClient` (`arbitrage-detector/exchangeClient.ts`). HMAC-SHA256 signing for all three exchanges. MARKET and LIMIT_IOC order types. UUID client order IDs (`arb-<uuid>`) on every order. `execution_enabled: false` safety guard in config — orders throw unless explicitly enabled. `enableExecution()` called in `detector.ts` when flag is true. Types in `arbitrage-detector/types.ts`. Bybit placement returns status NEW (no immediate fill data); caller must poll `getOrderStatus`. Testnet: override `BINANCE_URL` / `BYBIT_URL` in `.env` to testnet hosts. BingX signing: HMAC-SHA256 (V1 API) — verify before going live if migrating to V3.
+
+**To enable on testnet:** set `BINANCE_URL=https://testnet.binance.vision` in `.env`, add testnet API keys, then set `execution_enabled: true` in `config.yaml`.
 
 ---
 
-#### AT-6: Position tracking and risk controls
-**Must be live before any real capital is deployed.** Add: maximum concurrent open positions, per-pair and per-exchange notional exposure limits, net delta tracking for partially-filled legs, per-trade stop-loss, maximum daily loss circuit breaker, and API rate-limit monitoring (Binance 1200 req/min weight budget). Without a daily loss circuit breaker, a retry bug can exhaust capital silently.
+#### ~~AT-6: Position tracking and risk controls~~ ✓ DONE
+`RiskManager` in `arbitrage-detector/riskManager.ts`. Enforces: max concurrent positions (default 1), per-exchange notional cap (default $1000), daily loss circuit breaker (`max_daily_loss_usdt`, default $50), peak-balance drawdown halt (`max_drawdown_pct`, default 5%), API rate-limit tracking per exchange (rolling 60s window, warns at 80%). `approve()` called before every execution; `onOpen()` / `onClose(pnl)` maintain state. Midnight UTC auto-reset. State persisted to `detector_settings` table for dashboard reads. `GET /api/risk` endpoint added to dashboard with halted flag + red banner. `resume()` method for manual circuit-breaker reset.
 
 ---
 
-#### AT-2: Simultaneous dual-leg execution coordinator
-Build an `ExecutionCoordinator` that submits both legs in parallel (`Promise.all`) within a latency budget (target < 50ms). Must handle partial fills, one-leg failures (cancel or hedge the open leg), and idempotent client order IDs for safe retries. `OpportunityTracker.open()` invokes the coordinator instead of just logging. New opportunity states: DETECTED → SUBMITTED → FILLED / PARTIAL_FILL → HEDGING → CLOSED.
+#### ~~AT-2: Simultaneous dual-leg execution coordinator~~ ✓ DONE
+`ExecutionCoordinator` in `arbitrage-detector/executionCoordinator.ts`. `Promise.allSettled([buy, sell])` parallel submission. Stale check (`max_execution_age_ms`, default 500ms) before any order. REJECTED legs retried once with fresh UUID client order ID. Bybit fill polling (3×300ms) since placement returns status NEW. One-leg hedge: if only buy fills → market-sell on buy exchange; if only sell fills → market-buy on sell exchange. Critical hedge failures fire `critical` webhook alert. Results persisted to `executions` DB table + `opportunities.realized_pnl_usdt`. Also fixed the `effectiveCapital` latent bug: stored on `Opportunity` object at open, passed into every `poll()` call.
 
 ---
 
-#### AT-5: Level-2 order book depth and dynamic slippage
-Fetch top N order book levels for each candidate pair. Walk the book to compute expected average fill price at the intended notional. Replace the fixed `slippage_estimate_pct` constant with a per-trade computed value. Add a minimum-depth guard that skips or reduces position size when available quantity at best price is below threshold.
+#### ~~AT-5: Level-2 order book depth and dynamic slippage~~ ✓ DONE
+`orderBook.ts` — `computeEffectiveFill(levels, notionalUsdt, side)` walks book levels, computes weighted-average fill price and fill ratio. Integrated into `ExecutionCoordinator.execute()`: fetches live L2 book for both legs before order placement, recomputes net spread with real depth slippage, skips trade if `fillRatio < min_fill_ratio` (default 0.9). `order_book_depth: 10` in config. `depth_slippage_pct` column added to `prices` table.
 
 ---
 
-#### AT-9: Realized PnL and fill audit log
-Extend the DB schema with a `fills` table: actual fill price, quantity, actual exchange fee, fill timestamp, and exchange order ID. Compute realized PnL as `(fill_sell * qty - fee_sell) - (fill_buy * qty + fee_buy)`. Reconcile periodically against exchange balance APIs to catch discrepancies. Enable immediately on first live execution.
+#### ~~AT-9: Realized PnL and fill audit log~~ ✓ DONE
+`executions` DB table: leg, order_id, client_order_id, status, filled_qty, avg_fill_price, fee_usdt, executed_at. `realized_pnl_usdt` column on `opportunities`. `Reconciler` in `arbitrage-detector/reconciler.ts`: snapshots balances at start, every N hours queries exchange balances and compares delta vs. cumulative realized PnL, warns when divergence > `reconciliation_tolerance_pct` (default 0.5%). Dashboard `/api/risk` returns realized PnL stats.
 
 ---
 
-#### AT-10: Operational reliability for live execution
-On restart, recover any PENDING orders by querying exchange order-status APIs. Add alerting (webhook/SMS/email) for circuit breaker triggers and unrecoverable errors. Add a heartbeat endpoint for external monitoring. Build a dry-run mode against exchange sandbox environments before enabling live capital.
+#### ~~AT-10: Operational reliability for live execution~~ ✓ DONE
+`recoverPendingOrders()` on startup: fetches open orders (filtered by `arb-` prefix) and cancels stale ones (>60s old). Webhook alerting via `alerting.ts` — `makeAlerter()` fires on circuit breaker trigger, hedge failure, execution error, reconciliation divergence. `GET /health` endpoint: returns `status: ok|halted|stale`, `uptime_seconds`, `last_opportunity_at`, `last_execution_at`; detector writes heartbeat to `detector_settings` every 30s. `dry_run_sandbox: true` config flag routes orders to testnet URLs (set matching testnet URLs in `.env`).
 
 ---
 

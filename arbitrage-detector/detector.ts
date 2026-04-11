@@ -8,6 +8,10 @@ import { OpportunityTracker } from './opportunityTracker'
 import { initDb } from './db'
 import { WsFeedManager } from './wsFeed'
 import { InventoryManager } from './inventoryManager'
+import { RiskManager } from './riskManager'
+import { ExecutionCoordinator } from './executionCoordinator'
+import { Reconciler } from './reconciler'
+import { makeAlerter } from './alerting'
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -36,6 +40,35 @@ function meetsVolumeFloor(db: Database, symbol: string, minVol: number): boolean
     return row.max_vol >= minVol
   } catch {
     return true  // table doesn't exist yet — don't exclude
+  }
+}
+
+// On startup, query each exchange for open orders placed by this bot (prefix: 'arb-').
+// Cancel any that are older than 60s to avoid ghost positions.
+async function recoverPendingOrders(client: ExchangeClient, db: Database, exchanges: string[]): Promise<void> {
+  console.log('[recovery] checking for pending orders from previous session...')
+  for (const ex of exchanges) {
+    try {
+      const openOrders = await client.getOpenOrders(ex)
+      const staleMs = 60_000
+      for (const order of openOrders) {
+        const age = Date.now() - order.createdAt
+        if (age > staleMs) {
+          console.warn(`[recovery:${ex}] cancelling stale order ${order.orderId} (${order.symbol}, ${Math.round(age / 1000)}s old)`)
+          try {
+            await client.cancelOrder(ex, order.symbol, order.orderId)
+            console.log(`[recovery:${ex}] cancelled ${order.orderId}`)
+          } catch (e: any) {
+            console.error(`[recovery:${ex}] cancel failed for ${order.orderId}: ${e.message}`)
+          }
+        } else {
+          console.log(`[recovery:${ex}] found recent order ${order.orderId} (${Math.round(age / 1000)}s old) — leaving active`)
+        }
+      }
+      if (openOrders.length === 0) console.log(`[recovery:${ex}] no pending orders found`)
+    } catch (e: any) {
+      console.warn(`[recovery:${ex}] could not fetch open orders: ${e.message}`)
+    }
   }
 }
 
@@ -75,8 +108,14 @@ async function main(): Promise<void> {
   writeSettings.run('liquidity_flag_threshold_pct', String(config.liquidity_flag_threshold_pct ?? 0.1))
 
   const client = new ExchangeClient(env, db)
+  if (config.execution_enabled) client.enableExecution(config.dry_run_sandbox ?? false)
   const logger = new Logger(logsDir, db)
   const tracker = new OpportunityTracker()
+
+  // Alerting (webhook — fire and forget)
+  const alertWebhookUrl = process.env.ALERT_WEBHOOK_URL
+  const alert = makeAlerter(alertWebhookUrl)
+  if (alertWebhookUrl) console.log('[alerting] webhook configured')
 
   // Inventory manager — only active when API keys are present in .env
   const keyedExchanges = Object.keys(env.apiKeys)
@@ -92,12 +131,70 @@ async function main(): Promise<void> {
     console.log('[inventory] no API keys configured — running in alarm-only mode')
   }
 
+  // Risk manager — writes state to detector_settings so dashboard can read it
+  const persistRiskState = (state: ReturnType<RiskManager['getState']>) => {
+    const w = db.prepare(`INSERT OR REPLACE INTO detector_settings (key, value) VALUES (?, ?)`)
+    w.run('risk_halted', state.halted ? '1' : '0')
+    w.run('risk_halt_reason', state.haltReason)
+    w.run('risk_daily_pnl', String(state.dailyRealizedPnl))
+    w.run('risk_open_positions', String(state.openPositions))
+  }
+  const risk = new RiskManager(config, alert, persistRiskState)
+
+  // Midnight UTC reset for daily counters
+  const scheduleMidnightReset = () => {
+    const now = new Date()
+    const midnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1))
+    const msUntilMidnight = midnight.getTime() - Date.now()
+    setTimeout(() => {
+      risk.resetDay()
+      scheduleMidnightReset()
+    }, msUntilMidnight)
+  }
+  scheduleMidnightReset()
+
+  // Execution coordinator (null when execution disabled — still validates risk)
+  const coordinator = config.execution_enabled
+    ? new ExecutionCoordinator(client, risk, config, db, alert)
+    : null
+
+  if (config.execution_enabled) {
+    console.log('[execution] ENABLED — orders will be placed on detected opportunities')
+  } else {
+    console.log('[execution] DISABLED — alarm-only mode (set execution_enabled: true to enable)')
+  }
+
+  // Reconciler — only active when inventory is available
+  let reconciler: Reconciler | null = null
+  if (inventory) {
+    reconciler = new Reconciler(
+      inventory, db, alert,
+      config.reconciliation_tolerance_pct ?? 0.5,
+    )
+    reconciler.snapshot()
+    reconciler.start(config.reconciliation_interval_hours ?? 4)
+  }
+
+  // Startup: recover any PENDING orders placed by this bot in a previous session
+  if (config.execution_enabled && keyedExchanges.length > 0) {
+    await recoverPendingOrders(client, db, keyedExchanges)
+  }
+
+  // Heartbeat: write to detector_settings every 30s so dashboard /health can check liveness
+  const startupAt = Date.now()
+  writeSettings.run('startup_at_ms', String(startupAt))
+  writeSettings.run('execution_enabled', config.execution_enabled ? '1' : '0')
+  const writeHeartbeat = db.prepare(`INSERT OR REPLACE INTO detector_settings (key, value) VALUES ('last_heartbeat_ms', ?)`)
+  setInterval(() => {
+    try { writeHeartbeat.run(String(Date.now())) } catch {}
+  }, 30_000)
+
   const wsFeed = Object.keys(env.wsUrls).length > 0
     ? new WsFeedManager(env.wsUrls, config.staleness_threshold_ms ?? 2000)
     : null
 
-  process.on('SIGINT', () => { wsFeed?.disconnect(); logger.flush(); process.exit(0) })
-  process.on('SIGTERM', () => { wsFeed?.disconnect(); logger.flush(); process.exit(0) })
+  process.on('SIGINT', () => { wsFeed?.disconnect(); reconciler?.stop(); logger.flush(); process.exit(0) })
+  process.on('SIGTERM', () => { wsFeed?.disconnect(); reconciler?.stop(); logger.flush(); process.exit(0) })
 
   const configuredExchanges = Object.keys(config.exchanges).filter(ex => {
     if (env.exchangeUrls[ex]) return true
@@ -227,11 +324,12 @@ async function main(): Promise<void> {
         }
 
         // Phase 1: for each symbol, find best spread across all exchange pairs
-        const spreads: Array<{ sym: string; spread: ReturnType<typeof computeSpread> }> = []
+        const spreads: Array<{ sym: string; spread: ReturnType<typeof computeSpread>; effectiveCapital: number }> = []
         for (const sym of qualifying) {
           const symExs = symbolExchanges.get(sym)!
 
           let best: ReturnType<typeof computeSpread> | null = null
+          let bestCapital = config.capital_per_trade_usdt
           for (let i = 0; i < symExs.length; i++) {
             for (let j = i + 1; j < symExs.length; j++) {
               const exA = symExs[i], exB = symExs[j]
@@ -267,10 +365,13 @@ async function main(): Promise<void> {
                 console.warn(`[skip] ${sym} ${exA}→${exB} spread ${s.netSpreadPct.toFixed(2)}% exceeds max_net_spread_pct=${maxSpread} — likely bad price data`)
                 continue
               }
-              if (!best || s.netSpreadPct > best.netSpreadPct) best = s
+              if (!best || s.netSpreadPct > best.netSpreadPct) {
+                best = s
+                bestCapital = effectiveCapital
+              }
             }
           }
-          if (best) spreads.push({ sym, spread: best })
+          if (best) spreads.push({ sym, spread: best, effectiveCapital: bestCapital })
           lastScannedAt.set(sym, Date.now())
         }
 
@@ -282,7 +383,7 @@ async function main(): Promise<void> {
         })()
 
         // Phase 3: check for opportunities (outside transaction)
-        for (const { sym, spread } of spreads) {
+        for (const { sym, spread, effectiveCapital } of spreads) {
           if (spread.isOpportunity && !tracker.hasOpenOpportunity()) {
             // Inventory gate — skipped in alarm-only mode (inventory is null)
             if (inventory) {
@@ -297,8 +398,15 @@ async function main(): Promise<void> {
 
             const prev = lastScannedAt.get(sym)
             const openResolutionMs = prev != null ? Date.now() - prev : null
-            const opp = tracker.open(spread, sym, [spread.exchangeBuy, spread.exchangeSell], client, config, logger, wsFeed, openResolutionMs)
+            const opp = tracker.open(spread, sym, [spread.exchangeBuy, spread.exchangeSell], client, config, logger, wsFeed, openResolutionMs, effectiveCapital)
             logger.logOpportunityOpened(opp)
+
+            // Fire execution if enabled — non-blocking, does not hold up the scan loop
+            if (coordinator) {
+              coordinator.execute(opp, effectiveCapital).catch(err => {
+                console.error(`[execution] unhandled error for ${opp.id}:`, err)
+              })
+            }
           }
         }
       } catch (err) {

@@ -99,7 +99,11 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => { wsFeed?.disconnect(); logger.flush(); process.exit(0) })
   process.on('SIGTERM', () => { wsFeed?.disconnect(); logger.flush(); process.exit(0) })
 
-  const configuredExchanges = Object.keys(config.exchanges)
+  const configuredExchanges = Object.keys(config.exchanges).filter(ex => {
+    if (env.exchangeUrls[ex]) return true
+    console.warn(`[config] exchange '${ex}' defined in config.yaml but no URL in env — skipping`)
+    return false
+  })
 
   // Log WS status every 60s so you can see connection health in the logs
   if (wsFeed) {

@@ -167,7 +167,15 @@ function querySnapshot(dbPath: string) {
       SELECT MAX(fetched_at_ms) as ts FROM prices
     `).get() as { ts: number | null }
 
-    return { pairs, opportunities, stats: { ...stats, last_seen_ms: lastSeen?.ts ?? null } }
+    let settings: { key: string; value: string }[] = []
+    try { settings = db.prepare(`SELECT key, value FROM detector_settings`).all() as { key: string; value: string }[] } catch {}
+    const getSetting = (k: string, fallback: number) => parseFloat(settings.find(s => s.key === k)?.value ?? String(fallback))
+    const liquidityFlag = {
+      capitalUsdt: getSetting('capital_per_trade_usdt', 500),
+      thresholdPct: getSetting('liquidity_flag_threshold_pct', 0.1),
+    }
+
+    return { pairs, opportunities, stats: { ...stats, last_seen_ms: lastSeen?.ts ?? null }, liquidityFlag }
   } finally {
     db.close()
   }
@@ -343,6 +351,8 @@ function buildHtml(): string {
   tr.clickable { cursor: pointer; }
   tr.unmonitored td { color: var(--dim); }
   tr.unmonitored td:first-child { color: var(--text); }
+  tr.low-liquidity td { background: rgba(249,226,175,0.06); }
+  tr.low-liquidity td:last-child::after { content: ' ⚠'; color: var(--yellow); font-size: 10px; }
 
   .monitored-dot { color: var(--green); font-size: 8px; margin-right: 4px; vertical-align: middle; }
 
@@ -621,6 +631,7 @@ function buildHtml(): string {
           </td>
         </tr>\`
       : ''
+    const lf = currentData?.liquidityFlag
     const renderRow = p => {
       const dot = p.is_monitored ? '<span class="monitored-dot">●</span>' : ''
       const dir = p.exchange_buy ? \`\${esc(p.exchange_buy)} <span class="arrow">→</span> \${esc(p.exchange_sell)}\` : '<span style="color:var(--dim)">–</span>'
@@ -630,7 +641,8 @@ function buildHtml(): string {
       const bestSpread = p.best_spread_pct > 0 ? \`<span class="\${spreadClass(p.best_spread_pct)}">\${fmtPct(p.best_spread_pct)}</span>\` : '<span style="color:var(--dim)">–</span>'
       const pnl  = p.total_pnl_usdt > 0  ? \`<span class="spread-pos">\${fmtUsdt(p.total_pnl_usdt)}</span>\` : '<span style="color:var(--dim)">–</span>'
       const seen = p.fetched_at_ms ? fmtAgo(p.fetched_at_ms) : '–'
-      return \`<tr class="\${p.is_monitored ? '' : 'unmonitored'}">
+      const lowLiq = lf && p.min_volume_usdt > 0 && (lf.capitalUsdt / p.min_volume_usdt * 100) > lf.thresholdPct
+      return \`<tr class="\${p.is_monitored ? '' : 'unmonitored'}\${lowLiq ? ' low-liquidity' : ''}">
         <td>\${dot}<span class="pair-link" data-pair="\${esc(p.symbol)}">\${esc(p.symbol)}</span></td>
         <td>\${dir}</td>
         <td>\${spread}</td>

@@ -29,6 +29,7 @@ export interface Config {
   max_net_spread_pct?: number           // reject opportunities above this spread as bad data (default 20)
   max_opportunity_duration_ms?: number  // force-close stuck opportunities after this duration (default 300000)
   price_retention_hours?: number        // prune prices older than this; 0 = keep forever (default 6)
+  liquidity_flag_threshold_pct?: number // flag routes where capital > this % of min exchange daily volume (default 0.1)
 }
 
 export interface Env {

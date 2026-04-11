@@ -66,6 +66,11 @@ async function main(): Promise<void> {
   prunePrices()
   setInterval(prunePrices, 60 * 60 * 1000)
 
+  // Publish config values the dashboard needs for display logic
+  const writeSettings = db.prepare(`INSERT OR REPLACE INTO detector_settings (key, value) VALUES (?, ?)`)
+  writeSettings.run('capital_per_trade_usdt', String(config.capital_per_trade_usdt))
+  writeSettings.run('liquidity_flag_threshold_pct', String(config.liquidity_flag_threshold_pct ?? 0.1))
+
   const client = new ExchangeClient(env, db)
   const logger = new Logger(logsDir, db)
   const tracker = new OpportunityTracker()

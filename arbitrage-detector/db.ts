@@ -42,6 +42,10 @@ export function initDb(dbPath: string): Db {
       bid_sell REAL NOT NULL,
       net_spread_pct REAL NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS detector_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS exchange_symbol_blacklist (
       exchange TEXT NOT NULL,
       symbol TEXT NOT NULL,

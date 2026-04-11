@@ -20,3 +20,4 @@ staleness_threshold_ms: 2000       # fall back to REST if WS tick older than thi
 max_net_spread_pct: 20             # ignore opportunities above this spread — almost always bad data
 max_opportunity_duration_ms: 300000  # force-close stuck opportunity after 5 min (safeguard against frozen prices)
 price_retention_hours: 6             # prune prices table to this rolling window; 0 = keep forever
+liquidity_flag_threshold_pct: 0.1   # flag routes where capital exceeds 0.1% of smallest exchange's daily volume

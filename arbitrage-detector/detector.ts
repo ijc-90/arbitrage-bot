@@ -7,6 +7,7 @@ import { Logger } from './logger'
 import { OpportunityTracker } from './opportunityTracker'
 import { initDb } from './db'
 import { WsFeedManager } from './wsFeed'
+import { InventoryManager } from './inventoryManager'
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -74,6 +75,20 @@ async function main(): Promise<void> {
   const client = new ExchangeClient(env, db)
   const logger = new Logger(logsDir, db)
   const tracker = new OpportunityTracker()
+
+  // Inventory manager — only active when API keys are present in .env
+  const keyedExchanges = Object.keys(env.apiKeys)
+  const inventory = keyedExchanges.length > 0
+    ? new InventoryManager(client, keyedExchanges)
+    : null
+
+  if (inventory) {
+    await inventory.refreshAll()
+    inventory.startBackgroundRefresh()
+    console.log(`[inventory] tracking balances for: ${keyedExchanges.join(', ')}`)
+  } else {
+    console.log('[inventory] no API keys configured — running in alarm-only mode')
+  }
 
   const wsFeed = Object.keys(env.wsUrls).length > 0
     ? new WsFeedManager(env.wsUrls, config.staleness_threshold_ms ?? 2000)
@@ -263,6 +278,17 @@ async function main(): Promise<void> {
         // Phase 3: check for opportunities (outside transaction)
         for (const { sym, spread } of spreads) {
           if (spread.isOpportunity && !tracker.hasOpenOpportunity()) {
+            // Inventory gate — skipped in alarm-only mode (inventory is null)
+            if (inventory) {
+              const baseAsset = sym.endsWith('USDT') ? sym.slice(0, -4) : sym.slice(0, -3)
+              const check = inventory.canTrade(spread.exchangeBuy, spread.exchangeSell, baseAsset, config.capital_per_trade_usdt, spread.askBuy)
+              if (!check.ok) {
+                console.warn(`[inventory] skip ${sym}: ${check.reason}`)
+                continue
+              }
+              inventory.deduct(spread.exchangeBuy, spread.exchangeSell, baseAsset, config.capital_per_trade_usdt, spread.askBuy)
+            }
+
             const prev = lastScannedAt.get(sym)
             const openResolutionMs = prev != null ? Date.now() - prev : null
             const opp = tracker.open(spread, sym, [spread.exchangeBuy, spread.exchangeSell], client, config, logger, wsFeed, openResolutionMs)

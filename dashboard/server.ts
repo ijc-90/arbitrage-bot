@@ -508,6 +508,28 @@ function buildHtml(): string {
   </div>
 </div>
 
+  <div class="section" id="decay-section" style="display:none">
+    <div class="section-header">
+      <h2>Spread Decay</h2>
+      <span style="color:var(--dim);font-size:11px" id="decay-meta"></span>
+    </div>
+    <p style="color:var(--dim);font-size:11px;margin:0 0 12px">How much of the detected spread remains if execution takes N ms. Sets the empirical latency budget before going live.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Exec latency</th>
+          <th>Avg spread</th>
+          <th>Spread retained</th>
+          <th>Still positive</th>
+          <th>Sample size</th>
+        </tr>
+      </thead>
+      <tbody id="decay-body">
+        <tr><td colspan="5" style="color:var(--dim);text-align:center">–</td></tr>
+      </tbody>
+    </table>
+  </div>
+
 <!-- Detail panel -->
 <div id="detail-overlay"></div>
 <div id="detail-panel">
@@ -894,6 +916,41 @@ function buildHtml(): string {
 
   fetchSnapshot()
   setInterval(fetchSnapshot, 2000)
+
+  // ── Decay analysis (loaded once, not on every poll) ────────────────────────
+  async function fetchDecay() {
+    let data
+    try { data = await (await fetch('/api/decay')).json() } catch { return }
+    if (!data || data.error || !data.buckets) return
+
+    const section = document.getElementById('decay-section')
+    const body    = document.getElementById('decay-body')
+    const meta    = document.getElementById('decay-meta')
+
+    if (data.opp_count === 0) return  // no data yet — keep section hidden
+
+    section.style.display = 'block'
+    meta.textContent = \`\${data.opp_count} opportunities · \${data.tick_count} ticks\`
+
+    const fmtMs = ms => ms >= 1000 ? (ms / 1000) + 's' : ms + 'ms'
+    const fmtPct = v => v == null ? '–' : (v >= 0 ? '+' : '') + v.toFixed(4) + '%'
+    const retentionClass = r => r == null ? '' : r >= 80 ? 'spread-pos' : r >= 50 ? '' : 'spread-neg'
+
+    body.innerHTML = data.buckets.map(b => {
+      const ret = b.avg_retention_pct != null ? b.avg_retention_pct.toFixed(1) + '%' : '–'
+      const pos = b.pct_positive != null ? b.pct_positive.toFixed(0) + '%' : '–'
+      return \`<tr>
+        <td style="color:var(--blue)">\${fmtMs(b.ms)}</td>
+        <td class="\${spreadClass(b.avg_spread)}">\${fmtPct(b.avg_spread)}</td>
+        <td class="\${retentionClass(b.avg_retention_pct)}">\${ret}</td>
+        <td>\${pos}</td>
+        <td style="color:var(--dim)">\${b.count}</td>
+      </tr>\`
+    }).join('')
+  }
+
+  fetchDecay()
+  setInterval(fetchDecay, 60000)  // refresh every minute — decay stats are slow-moving
 </script>
 </body>
 </html>`
@@ -935,6 +992,73 @@ app.get('/api/pairs', (req, res) => {
     else if (sort === 'opps')   rows.sort((a: any, b: any) => b.opp_count - a.opp_count)
 
     res.json(rows)
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  } finally {
+    db.close()
+  }
+})
+
+app.get('/api/decay', (_req, res) => {
+  const db = openDb(dbPath)
+  if (!db) { res.status(503).json({ error: 'Database not available yet' }); return }
+  try {
+    // Pull all ticks joined to closed opportunities, ordered by time-after-open
+    const rows = db.prepare(`
+      SELECT
+        o.id,
+        o.net_spread_pct   AS entry_spread_pct,
+        o.opened_at_ms,
+        t.fetched_at_ms,
+        t.fetched_at_ms - o.opened_at_ms AS ms_after_open,
+        t.net_spread_pct   AS spread_at_time
+      FROM opportunities o
+      JOIN ticks t ON t.opp_id = o.id
+      WHERE o.close_reason IS NOT NULL
+        AND o.net_spread_pct > 0
+      ORDER BY o.opened_at_ms DESC, t.fetched_at_ms ASC
+    `).all() as Array<{
+      id: string
+      entry_spread_pct: number
+      opened_at_ms: number
+      fetched_at_ms: number
+      ms_after_open: number
+      spread_at_time: number
+    }>
+
+    // Settings for break-even calculation (sum of fees + slippage both sides)
+    const settings = db.prepare(`SELECT key, value FROM detector_settings`).all() as { key: string; value: string }[]
+
+    // Time buckets in ms — represent simulated execution latencies
+    const buckets = [200, 500, 1000, 2000, 5000]
+
+    // For each opportunity, find the first tick at or after each bucket boundary
+    const oppMap = new Map<string, typeof rows>()
+    for (const row of rows) {
+      if (!oppMap.has(row.id)) oppMap.set(row.id, [])
+      oppMap.get(row.id)!.push(row)
+    }
+
+    const bucketStats = buckets.map(ms => {
+      const samples: Array<{ entry: number; atTime: number }> = []
+      for (const ticks of oppMap.values()) {
+        const entry = ticks[0].entry_spread_pct
+        // Find first tick at or after this bucket offset
+        const tick = ticks.find(t => t.ms_after_open >= ms)
+        if (tick) samples.push({ entry, atTime: tick.spread_at_time })
+      }
+      if (samples.length === 0) return { ms, count: 0, avg_spread: null, avg_retention_pct: null, pct_positive: null }
+      const avgSpread = samples.reduce((s, x) => s + x.atTime, 0) / samples.length
+      const avgRetention = samples.reduce((s, x) => s + (x.atTime / x.entry) * 100, 0) / samples.length
+      const pctPositive = samples.filter(x => x.atTime > 0).length / samples.length * 100
+      return { ms, count: samples.length, avg_spread: avgSpread, avg_retention_pct: avgRetention, pct_positive: pctPositive }
+    })
+
+    res.json({
+      opp_count: oppMap.size,
+      tick_count: rows.length,
+      buckets: bucketStats,
+    })
   } catch (err: any) {
     res.status(500).json({ error: err.message })
   } finally {

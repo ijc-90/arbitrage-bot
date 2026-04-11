@@ -1,3 +1,4 @@
+import * as crypto from 'crypto'
 import { Env } from './config'
 import type { Db } from './db'
 
@@ -174,6 +175,83 @@ export class ExchangeClient {
       }
       this.bingxSymbolMap = newSymbolMap  // atomic swap; old map preserved on error path
       return map
+    }
+
+    throw new Error(`Unsupported exchange: ${exchange}`)
+  }
+
+  // Returns free balances as { ASSET: freeAmount } for the given exchange.
+  // Requires API key + secret in env.apiKeys[exchange]. Throws if not configured.
+  async getBalances(exchange: string): Promise<Record<string, number>> {
+    const creds = this.env.apiKeys[exchange]
+    if (!creds) throw new Error(`No API key configured for ${exchange}`)
+    const baseUrl = this.env.exchangeUrls[exchange]
+    if (!baseUrl) throw new Error(`No URL configured for exchange: ${exchange}`)
+
+    if (exchange === 'binance') {
+      const ts = Date.now()
+      const qs = `timestamp=${ts}`
+      const sig = crypto.createHmac('sha256', creds.secret).update(qs).digest('hex')
+      const res = await fetch(`${baseUrl}/api/v3/account?${qs}&signature=${sig}`, {
+        headers: { 'X-MBX-APIKEY': creds.key },
+      })
+      if (!res.ok) throw new Error(`Binance account fetch failed: ${res.status}`)
+      const data = await res.json() as { balances: Array<{ asset: string; free: string }> }
+      const out: Record<string, number> = {}
+      for (const b of data.balances) {
+        const free = parseFloat(b.free)
+        if (free > 0) out[b.asset] = free
+      }
+      return out
+    }
+
+    if (exchange === 'bybit') {
+      const ts = Date.now()
+      const recvWindow = 5000
+      const params = `accountType=UNIFIED`
+      const toSign = `${ts}${creds.key}${recvWindow}${params}`
+      const sig = crypto.createHmac('sha256', creds.secret).update(toSign).digest('hex')
+      const res = await fetch(`${baseUrl}/v5/account/wallet-balance?${params}`, {
+        headers: {
+          'X-BAPI-API-KEY': creds.key,
+          'X-BAPI-SIGN': sig,
+          'X-BAPI-TIMESTAMP': String(ts),
+          'X-BAPI-RECV-WINDOW': String(recvWindow),
+        },
+      })
+      if (!res.ok) throw new Error(`Bybit account fetch failed: ${res.status}`)
+      const data = await res.json() as {
+        result: { list: Array<{ coin: Array<{ coin: string; availableToWithdraw: string }> }> }
+      }
+      const out: Record<string, number> = {}
+      for (const wallet of data.result.list) {
+        for (const c of wallet.coin) {
+          const free = parseFloat(c.availableToWithdraw)
+          if (free > 0) out[c.coin] = free
+        }
+      }
+      return out
+    }
+
+    if (exchange === 'bingx') {
+      const ts = Date.now()
+      const qs = `timestamp=${ts}`
+      const sig = crypto.createHmac('sha256', creds.secret).update(qs).digest('hex')
+      const res = await fetch(`${baseUrl}/openApi/spot/v1/account/balance?${qs}&signature=${sig}`, {
+        headers: { 'X-BX-APIKEY': creds.key },
+      })
+      if (!res.ok) throw new Error(`BingX account fetch failed: ${res.status}`)
+      const data = await res.json() as {
+        code: number
+        data: { balances: Array<{ asset: string; free: string }> }
+      }
+      if (data.code !== 0) throw new Error(`BingX account error: ${data.code}`)
+      const out: Record<string, number> = {}
+      for (const b of data.data.balances) {
+        const free = parseFloat(b.free)
+        if (free > 0) out[b.asset] = free
+      }
+      return out
     }
 
     throw new Error(`Unsupported exchange: ${exchange}`)

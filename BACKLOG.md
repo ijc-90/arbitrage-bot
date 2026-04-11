@@ -22,6 +22,7 @@ Alarm-only cross-exchange arbitrage detector. Tracks what's built, what's next, 
 - **Timing resolution** — `open_resolution_ms` and `close_resolution_ms` added to `opportunities` table. `open_resolution_ms`: gap since the symbol was last scanned before detection (NULL on first scan after startup). `close_resolution_ms`: gap between the penultimate fast-poll and the convergence-detection poll (≈ `fast_poll_interval_ms`). DB migration in `initDb()` handles existing DBs via `ALTER TABLE`. Dashboard shows duration as a range (`3.2s – 5.0s`) when `open_resolution_ms > 500ms`, single value otherwise.
 - **Price retention** — `prices` table pruned to a configurable rolling window (`price_retention_hours`, default 6h) on startup and every hour. `VACUUM` runs after each prune to reclaim disk. `0` disables pruning. `ticks` and `opportunities` kept forever.
 - **Liquidity flag** — Routes table highlights rows yellow when `capital_per_trade_usdt / min_exchange_volume > liquidity_flag_threshold_pct` (default 0.1%). Detector writes capital + threshold to `detector_settings` table on startup; dashboard reads it from DB so the threshold stays in one place (config.yaml).
+- **`entrySpreadPct` hardened** — `Opportunity` interface now carries an immutable `entrySpreadPct` field set once at open. Logger uses it instead of `peakSpreadPct` for the OPENED event, eliminating a fragile dependency on initialization order. `peakSpreadPct` continues to track the running maximum.
 
 ---
 
@@ -32,24 +33,9 @@ Alarm-only cross-exchange arbitrage detector. Tracks what's built, what's next, 
 
 ---
 
-### Auto-Trading Gaps
+### Auto-Trading — Execution Roadmap
 
-The following items surface from the gap analysis in `TRADING_REVIEW.md`. None are prerequisites for alarm-only operation, but all are required before any live execution engine could be built on this codebase.
-
----
-
-#### AT-1: Exchange order placement APIs
-Add authenticated order submission to `ExchangeClient` for all three exchanges (Binance, Bybit, BingX). Requires API key management with HMAC-SHA256/ECDSA signing, `MARKET` and `LIMIT IOC/FOK` order types, fill confirmation via polling or WebSocket subscription, and cancel-on-miss logic for the open leg when the paired leg fails.
-
----
-
-#### AT-2: Simultaneous dual-leg execution coordinator
-Build an `ExecutionCoordinator` that submits both legs in parallel (`Promise.all`) within a latency budget (target < 50ms). Must handle partial fills, one-leg failures (cancel or hedge the open leg), and idempotent client order IDs for safe retries.
-
----
-
-#### AT-3: Pre-positioned capital inventory manager
-Track USDT and base-asset balances per exchange. Before accepting any execution opportunity, confirm free balance is sufficient on both the buy and sell sides. Trigger rebalancing when inventory imbalance exceeds a configured threshold. Without this, cross-exchange execution is impossible.
+Priority order based on domain review (2026-04-11). Hard dependency chain: AT-7 → AT-3 → AT-1 → AT-6 → AT-2 → AT-5 → AT-9 → AT-10 → AT-8.
 
 ---
 
@@ -64,33 +50,48 @@ BYBIT_WS_URL=wss://stream.bybit.com
 
 ---
 
-#### AT-5: Level-2 order book depth and dynamic slippage
-Fetch top N order book levels (not just best bid/ask) for each candidate pair. Walk the book to compute expected average fill price given the intended notional. Replace the fixed `slippage_estimate_pct` constant with a per-trade computed value. Add a minimum-depth guard that skips or reduces position size when available quantity at best price is below threshold.
+#### ~~AT-7: Spread decay analysis~~ ✓ DONE
+`GET /api/decay` endpoint in `dashboard/server.ts`. Joins `ticks` to closed `opportunities`, buckets ticks by time-after-open (200ms, 500ms, 1s, 2s, 5s), computes avg spread at each bucket, avg % of entry spread retained, and % of opportunities still showing positive spread. Dashboard "Spread Decay" section renders the table (hidden until first opportunity data exists). Refreshes every 60s. Answers: if execution takes N ms, how much of the detected spread is left?
+
+---
+
+#### ~~AT-3: Pre-positioned capital inventory manager~~ ✓ DONE
+`InventoryManager` in `arbitrage-detector/inventoryManager.ts`. Caches free balances per exchange (refreshed on startup + every 5min background loop). `canTrade(buyEx, sellEx, baseAsset, capital, price)` checks USDT on buy side and base-asset on sell side before any opportunity is accepted; `deduct()` optimistically updates cache to prevent double-spend on concurrent detections. Authenticated balance queries in `ExchangeClient.getBalances()` for Binance (HMAC-SHA256 `X-MBX-APIKEY`), Bybit (HMAC-SHA256 `X-BAPI-SIGN`), BingX (HMAC-SHA256 `X-BX-APIKEY`). API keys loaded from `.env` (`BINANCE_API_KEY` / `BINANCE_API_SECRET` pattern). Fully optional — detector runs in alarm-only mode if no keys are present. `.env.prod.example` updated with key slots and WS URL examples.
+
+---
+
+#### AT-1: Exchange order placement APIs
+Add authenticated order submission to `ExchangeClient` for all three exchanges (Binance, Bybit, BingX). Requires API key management with HMAC-SHA256 signing, `MARKET` and `LIMIT IOC/FOK` order types, fill confirmation via polling or WebSocket user-stream, and cancel-on-miss logic for the open leg when the paired leg fails. Use idempotent client order IDs (UUID) on every order for safe retry.
 
 ---
 
 #### AT-6: Position tracking and risk controls
-Add: maximum concurrent open positions, per-pair and per-exchange notional exposure limits, net delta tracking for partially-filled legs, per-trade stop-loss, maximum daily loss circuit breaker, and API rate-limit monitoring (Binance 1200 req/min weight budget). None of these exist today.
+**Must be live before any real capital is deployed.** Add: maximum concurrent open positions, per-pair and per-exchange notional exposure limits, net delta tracking for partially-filled legs, per-trade stop-loss, maximum daily loss circuit breaker, and API rate-limit monitoring (Binance 1200 req/min weight budget). Without a daily loss circuit breaker, a retry bug can exhaust capital silently.
 
 ---
 
-#### AT-7: Latency measurement and spread decay model
-Instrument the full timing chain: detection → order submission → fill confirmation. Measure how much of the detected spread remains at fill time. Raise `min_net_spread_pct` (or the buffer threshold) by at least the average spread decay between detection and fill. Add a staleness guard that declines to trade against prices older than a configured threshold.
+#### AT-2: Simultaneous dual-leg execution coordinator
+Build an `ExecutionCoordinator` that submits both legs in parallel (`Promise.all`) within a latency budget (target < 50ms). Must handle partial fills, one-leg failures (cancel or hedge the open leg), and idempotent client order IDs for safe retries. `OpportunityTracker.open()` invokes the coordinator instead of just logging. New opportunity states: DETECTED → SUBMITTED → FILLED / PARTIAL_FILL → HEDGING → CLOSED.
 
 ---
 
-#### AT-8: Withdrawal and transfer automation for capital rebalancing
-Model on-chain withdrawal fees (currently ignored entirely) and block confirmation times per asset/network. Add withdrawal API calls to `ExchangeClient`. Build a rebalancing trigger that batches withdrawals when inventory imbalance exceeds a threshold. Account for in-flight capital when computing available inventory.
+#### AT-5: Level-2 order book depth and dynamic slippage
+Fetch top N order book levels for each candidate pair. Walk the book to compute expected average fill price at the intended notional. Replace the fixed `slippage_estimate_pct` constant with a per-trade computed value. Add a minimum-depth guard that skips or reduces position size when available quantity at best price is below threshold.
 
 ---
 
 #### AT-9: Realized PnL and fill audit log
-Extend the DB schema with a `fills` table: actual fill price, quantity, actual exchange fee, fill timestamp, and exchange order ID. Compute realized PnL as `(fill_sell * qty - fee_sell) - (fill_buy * qty + fee_buy)`. Reconcile periodically against exchange balance APIs to catch discrepancies.
+Extend the DB schema with a `fills` table: actual fill price, quantity, actual exchange fee, fill timestamp, and exchange order ID. Compute realized PnL as `(fill_sell * qty - fee_sell) - (fill_buy * qty + fee_buy)`. Reconcile periodically against exchange balance APIs to catch discrepancies. Enable immediately on first live execution.
 
 ---
 
 #### AT-10: Operational reliability for live execution
 On restart, recover any PENDING orders by querying exchange order-status APIs. Add alerting (webhook/SMS/email) for circuit breaker triggers and unrecoverable errors. Add a heartbeat endpoint for external monitoring. Build a dry-run mode against exchange sandbox environments before enabling live capital.
+
+---
+
+#### AT-8: Withdrawal and transfer automation for capital rebalancing
+Model on-chain withdrawal fees and block confirmation times per asset/network (USDT-TRC20 ~$1, ERC20 ~$15 — critical for sizing). Add withdrawal API calls to `ExchangeClient`. Build a rebalancing trigger that batches withdrawals when inventory imbalance exceeds a threshold. Account for in-flight capital when computing available inventory.
 
 ---
 

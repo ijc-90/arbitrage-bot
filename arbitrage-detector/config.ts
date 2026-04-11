@@ -32,9 +32,15 @@ export interface Config {
   liquidity_flag_threshold_pct?: number // flag routes where capital > this % of min exchange daily volume (default 0.1)
 }
 
+export interface ApiKey {
+  key: string
+  secret: string
+}
+
 export interface Env {
   exchangeUrls: Record<string, string>
   wsUrls: Record<string, string>
+  apiKeys: Record<string, ApiKey>  // exchange → { key, secret }; absent = read-only / alarm-only
 }
 
 export function loadConfig(configPath: string): Config {
@@ -49,14 +55,29 @@ export function loadEnv(): Env {
 
   const exchangeUrls: Record<string, string> = {}
   const wsUrls: Record<string, string> = {}
+  const apiKeys: Record<string, ApiKey> = {}
+
   for (const [key, value] of Object.entries(process.env)) {
-    if (key.endsWith('_WS_URL') && value) {
-      const exchange = key.slice(0, -7).toLowerCase()
-      wsUrls[exchange] = value
-    } else if (key.endsWith('_URL') && value) {
-      const exchange = key.slice(0, -4).toLowerCase()
-      exchangeUrls[exchange] = value
+    if (!value) continue
+    if (key.endsWith('_WS_URL')) {
+      wsUrls[key.slice(0, -7).toLowerCase()] = value
+    } else if (key.endsWith('_URL')) {
+      exchangeUrls[key.slice(0, -4).toLowerCase()] = value
+    } else if (key.endsWith('_API_KEY')) {
+      const exchange = key.slice(0, -8).toLowerCase()
+      if (!apiKeys[exchange]) apiKeys[exchange] = { key: '', secret: '' }
+      apiKeys[exchange].key = value
+    } else if (key.endsWith('_API_SECRET')) {
+      const exchange = key.slice(0, -11).toLowerCase()
+      if (!apiKeys[exchange]) apiKeys[exchange] = { key: '', secret: '' }
+      apiKeys[exchange].secret = value
     }
   }
-  return { exchangeUrls, wsUrls }
+
+  // Remove incomplete entries (key without secret or vice versa)
+  for (const [ex, creds] of Object.entries(apiKeys)) {
+    if (!creds.key || !creds.secret) delete apiKeys[ex]
+  }
+
+  return { exchangeUrls, wsUrls, apiKeys }
 }

@@ -10,6 +10,7 @@ export interface Opportunity {
   exchangeBuy: string
   exchangeSell: string
   openedAt: number
+  openResolutionMs: number | null
   peakSpreadPct: number
   estimatedPnlUsdt: number
   askBuy: number
@@ -22,6 +23,7 @@ function shortId(): string {
 
 export class OpportunityTracker {
   private current: Opportunity | null = null
+  private lastPollAt: number = 0
 
   hasOpenOpportunity(): boolean {
     return this.current !== null
@@ -34,7 +36,8 @@ export class OpportunityTracker {
     client: ExchangeClient,
     config: Config,
     logger: Logger,
-    wsFeed: WsFeedManager | null = null
+    wsFeed: WsFeedManager | null = null,
+    openResolutionMs: number | null = null
   ): Opportunity {
     const opp: Opportunity = {
       id: shortId(),
@@ -42,12 +45,14 @@ export class OpportunityTracker {
       exchangeBuy: spread.exchangeBuy,
       exchangeSell: spread.exchangeSell,
       openedAt: Date.now(),
+      openResolutionMs,
       peakSpreadPct: spread.netSpreadPct,
       estimatedPnlUsdt: spread.estimatedPnlUsdt,
       askBuy: spread.askBuy,
       bidSell: spread.bidSell,
     }
     this.current = opp
+    this.lastPollAt = Date.now()
 
     const [exA, exB] = exchanges
 
@@ -80,6 +85,9 @@ export class OpportunityTracker {
           throw err
         })
 
+    const pollStartedAt = this.lastPollAt
+    this.lastPollAt = Date.now()
+
     fetchWithRetry(2)
       .then(([tickA, tickB]) => {
         // Guard against transient bad prices (NaN/zero) — skip this tick rather than
@@ -104,7 +112,8 @@ export class OpportunityTracker {
 
         // convergence check FIRST — before touching controller
         if (!result.isOpportunity) {
-          logger.logOpportunityClosed(opp, 'CONVERGENCE')
+          const closeResolutionMs = Date.now() - pollStartedAt
+          logger.logOpportunityClosed(opp, 'CONVERGENCE', closeResolutionMs)
           this.current = null
           return
         }
@@ -114,7 +123,8 @@ export class OpportunityTracker {
         const maxDurationMs = config.max_opportunity_duration_ms ?? 300_000
         if (Date.now() - opp.openedAt > maxDurationMs) {
           console.warn(`[tracker] ${opp.id} ${opp.pair} exceeded max duration ${maxDurationMs}ms — closing as TIMEOUT`)
-          logger.logOpportunityClosed(opp, 'TIMEOUT')
+          const closeResolutionMs = Date.now() - pollStartedAt
+          logger.logOpportunityClosed(opp, 'TIMEOUT', closeResolutionMs)
           this.current = null
           return
         }
@@ -127,7 +137,8 @@ export class OpportunityTracker {
       })
       .catch(err => {
         console.error('Opportunity poll error:', err)
-        logger.logOpportunityClosed(opp, 'ERROR')
+        const closeResolutionMs = Date.now() - pollStartedAt
+        logger.logOpportunityClosed(opp, 'ERROR', closeResolutionMs)
         this.current = null
       })
   }

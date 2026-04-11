@@ -548,6 +548,11 @@ function buildHtml(): string {
     if (ms < 60000) return (ms / 1000).toFixed(1) + 's'
     return Math.floor(ms / 60000) + 'm ' + Math.floor((ms % 60000) / 1000) + 's'
   }
+  const fmtDurRange = (durationMs, openResolutionMs) => {
+    if (durationMs == null) return '–'
+    if (openResolutionMs == null || openResolutionMs <= 500) return fmtDur(durationMs)
+    return fmtDur(durationMs) + ' – ' + fmtDur(durationMs + openResolutionMs)
+  }
   const fmtAgo = ms => {
     if (ms == null) return '–'
     const d = Date.now() - ms
@@ -684,7 +689,7 @@ function buildHtml(): string {
         <td class="\${spreadClass(o.net_spread_pct)}">\${fmtPct(o.net_spread_pct)}</td>
         <td class="\${spreadClass(o.peak_spread_pct)}">\${fmtPct(o.peak_spread_pct)}</td>
         <td class="spread-pos">\${fmtUsdt(o.estimated_pnl_usdt)}</td>
-        <td>\${isOpen ? fmtDur(Date.now() - o.opened_at_ms) : fmtDur(o.duration_ms)}</td>
+        <td>\${isOpen ? fmtDur(Date.now() - o.opened_at_ms) : fmtDurRange(o.duration_ms, o.open_resolution_ms)}</td>
         <td style="color:var(--dim)">\${fmtAgo(timeMs)}</td>
         <td>\${tag}</td>
       </tr>\`
@@ -743,7 +748,7 @@ function buildHtml(): string {
     document.getElementById('dp-pnl').className        = 'value spread-pos'
     document.getElementById('dp-opened').textContent   = fmtTs(o.opened_at_ms)
     document.getElementById('dp-duration').textContent = o.duration_ms != null
-      ? fmtDur(o.duration_ms) : fmtDur(Date.now() - o.opened_at_ms) + ' (open)'
+      ? fmtDurRange(o.duration_ms, o.open_resolution_ms) : fmtDur(Date.now() - o.opened_at_ms) + ' (open)'
     document.getElementById('dp-reason').textContent   = o.close_reason ?? 'OPEN'
     document.getElementById('dp-reason').style.color   = o.close_reason === 'CONVERGENCE'
       ? 'var(--green)' : o.close_reason ? 'var(--red)' : 'var(--yellow)'

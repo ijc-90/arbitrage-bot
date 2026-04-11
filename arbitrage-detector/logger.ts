@@ -27,14 +27,15 @@ export class Logger {
       this.stmts = {
         insertOpp: db.prepare(`
           INSERT INTO opportunities
-            (id, pair, exchange_buy, exchange_sell, opened_at_ms, ask_buy, bid_sell, net_spread_pct, peak_spread_pct, estimated_pnl_usdt)
+            (id, pair, exchange_buy, exchange_sell, opened_at_ms, open_resolution_ms, ask_buy, bid_sell, net_spread_pct, peak_spread_pct, estimated_pnl_usdt)
           VALUES
-            (@id, @pair, @exchange_buy, @exchange_sell, @opened_at_ms, @ask_buy, @bid_sell, @net_spread_pct, @peak_spread_pct, @estimated_pnl_usdt)
+            (@id, @pair, @exchange_buy, @exchange_sell, @opened_at_ms, @open_resolution_ms, @ask_buy, @bid_sell, @net_spread_pct, @peak_spread_pct, @estimated_pnl_usdt)
         `),
         updateOpp: db.prepare(`
           UPDATE opportunities
           SET closed_at_ms = @closed_at_ms,
               duration_ms = @duration_ms,
+              close_resolution_ms = @close_resolution_ms,
               peak_spread_pct = @peak_spread_pct,
               estimated_pnl_usdt = @estimated_pnl_usdt,
               close_reason = @close_reason
@@ -76,6 +77,7 @@ export class Logger {
       bid_sell: opp.bidSell,
       net_spread_pct: opp.peakSpreadPct,
       estimated_pnl_usdt: opp.estimatedPnlUsdt,
+      open_resolution_ms: opp.openResolutionMs,
     })
     this.stmts?.insertOpp.run({
       id: opp.id,
@@ -83,6 +85,7 @@ export class Logger {
       exchange_buy: opp.exchangeBuy,
       exchange_sell: opp.exchangeSell,
       opened_at_ms: opp.openedAt,
+      open_resolution_ms: opp.openResolutionMs ?? null,
       ask_buy: opp.askBuy,
       bid_sell: opp.bidSell,
       net_spread_pct: opp.peakSpreadPct,
@@ -91,7 +94,7 @@ export class Logger {
     })
   }
 
-  logOpportunityClosed(opp: Opportunity, reason: string): void {
+  logOpportunityClosed(opp: Opportunity, reason: string, closeResolutionMs: number | null = null): void {
     const now = Date.now()
     const duration_ms = now - opp.openedAt
     this.append(this.opportunitiesPath, {
@@ -100,6 +103,7 @@ export class Logger {
       opp_id: opp.id,
       reason,
       duration_ms,
+      close_resolution_ms: closeResolutionMs,
       peak_spread_pct: opp.peakSpreadPct,
       estimated_pnl_usdt: opp.estimatedPnlUsdt,
     })
@@ -107,6 +111,7 @@ export class Logger {
       id: opp.id,
       closed_at_ms: now,
       duration_ms,
+      close_resolution_ms: closeResolutionMs ?? null,
       peak_spread_pct: opp.peakSpreadPct,
       estimated_pnl_usdt: opp.estimatedPnlUsdt,
       close_reason: reason,

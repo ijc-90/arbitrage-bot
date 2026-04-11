@@ -18,37 +18,17 @@ Alarm-only cross-exchange arbitrage detector. Tracks what's built, what's next, 
 - **Dead variable removed** — `hasPairSnapshots` in `detector.ts` was always `true` at assignment, never read, and had an inverted name. Deleted.
 - **`min_net_spread_pct` removed** — redundant entry condition eliminated from `spreadEngine.ts`, `config.ts`, both config YAMLs, and tests. Entry is now gated solely by `net >= all_in_cost * entry_buffer_multiplier`. The removed condition was never binding (buffer threshold always exceeded it in both prod and test configs).
 - **Mock server and scenario infrastructure removed** — `mock-exchanges/`, `scenarios/`, `arbitrage-detector/tests/`, `config.test.yaml`, `StepController`, `ContinuousController`, `LoopController`, `fastAdvance()`, `--steps`, `--advance-url` all deleted. Detector is now continuous-only. Testing approach TBD.
+- **TLS certificate validation re-enabled** — removed `NODE_TLS_REJECT_UNAUTHORIZED=0` from `docker-compose.prod.yml` (was set on `detector` and `pair-fetcher`). All outbound HTTPS calls to exchange APIs now validate certificates.
+- **Timing resolution** — `open_resolution_ms` and `close_resolution_ms` added to `opportunities` table. `open_resolution_ms`: gap since the symbol was last scanned before detection (NULL on first scan after startup). `close_resolution_ms`: gap between the penultimate fast-poll and the convergence-detection poll (≈ `fast_poll_interval_ms`). DB migration in `initDb()` handles existing DBs via `ALTER TABLE`. Dashboard shows duration as a range (`3.2s – 5.0s`) when `open_resolution_ms > 500ms`, single value otherwise.
 
 ---
 
 ## Backlog
 
-### Timing resolution
-Track how precisely we know when an opportunity opened and closed.
-
-**Close resolution** (`close_resolution_ms`): time between last tick and convergence detection — easy, derived from actual tick timestamps already stored.
-
-**Open resolution** (`open_resolution_ms`): time since the pair was last scanned before detection. Requires `lastScannedAt: Map<string, number>` in the main detector loop, updated each scan, passed into `OpportunityTracker.open()`. First scan after startup = `NULL` (unknown).
-
-Per-exchange granularity: track `lastSuccessfulFetchAt` per exchange in `ExchangeClient`. `open_resolution_ms` = `max(buy_gap, sell_gap)` — worst case wins.
-
-Dashboard impact: show duration as a range (`12ms – 5.2s`) when resolution is low, rather than a single misleading number.
-
-Schema columns to add to `opportunities`: `open_resolution_ms INTEGER`, `close_resolution_ms INTEGER`.
-
----
-
 ### Dashboard enhancements (remaining)
 - Price history retention policy — rolling window or prune by age to keep DB size bounded
-- Duration range display once resolution tracking is implemented
 - **Pair volume section** — surface `pair_snapshots` data: show 24h USDT volume per pair/exchange, flag pairs where our capital would exceed X% of daily volume (configurable threshold)
 - **Pair view** — a dedicated view showing all symbols (BTC/USDT, ETH/USDT, …) with each symbol's routes listed beneath it (e.g. BTCUSDT: binance↔bybit, binance↔bingx, bybit↔bingx). Lets you compare spread performance across routes for the same symbol. Terminology: **pair** = two assets (BTCUSDT); **route** = a specific pair traded across two exchanges.
-
----
-
-### Security — re-enable TLS certificate validation in production
-**File:** `docker-compose.prod.yml`.
-`NODE_TLS_REJECT_UNAUTHORIZED=0` is set on all three services. This disables TLS verification for all outbound HTTPS calls to exchange APIs, enabling man-in-the-middle attacks that could spoof price feeds and produce false arbitrage signals. Remove this env var from all services. The `dashboard` service has no outbound API calls and especially does not need it.
 
 ---
 

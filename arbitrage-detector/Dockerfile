@@ -4,9 +4,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm install
 COPY . .
-RUN npm_config_nodedir=/usr/local npm rebuild better-sqlite3 --build-from-source
 
-COPY config.yaml .
-
-CMD ["node", "dist/detector.js", "--db", "/app/logs/arb.db"]
+CMD ["npx", "ts-node", "detector.ts", "--db", "/app/logs/arb.db"]

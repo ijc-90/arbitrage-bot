@@ -35,3 +35,6 @@ On every task or iteration, read BACKLOG.md and update it to reflect what was ju
 
 ## See also
 BACKLOG.md — what's built, what's next, design decisions on record
+
+## Style
+if caveman plugin is on, use the lite config

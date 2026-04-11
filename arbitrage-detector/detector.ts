@@ -82,6 +82,9 @@ async function main(): Promise<void> {
   let lastDiscoveryAt = 0
   const REDISCOVERY_INTERVAL_MS = 10 * 60 * 1000  // re-discover pairs every 10 minutes
 
+  // Track when each symbol was last scanned to compute open_resolution_ms
+  const lastScannedAt = new Map<string, number>()
+
   while (true) {
     if (config.auto_pairs) {
       try {
@@ -228,6 +231,7 @@ async function main(): Promise<void> {
             }
           }
           if (best) spreads.push({ sym, spread: best })
+          lastScannedAt.set(sym, Date.now())
         }
 
         // Phase 2: log all prices in one transaction
@@ -240,7 +244,9 @@ async function main(): Promise<void> {
         // Phase 3: check for opportunities (outside transaction)
         for (const { sym, spread } of spreads) {
           if (spread.isOpportunity && !tracker.hasOpenOpportunity()) {
-            const opp = tracker.open(spread, sym, [spread.exchangeBuy, spread.exchangeSell], client, config, logger, wsFeed)
+            const prev = lastScannedAt.get(sym)
+            const openResolutionMs = prev != null ? Date.now() - prev : null
+            const opp = tracker.open(spread, sym, [spread.exchangeBuy, spread.exchangeSell], client, config, logger, wsFeed, openResolutionMs)
             logger.logOpportunityOpened(opp)
           }
         }

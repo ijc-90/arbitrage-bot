@@ -14,6 +14,8 @@ export function initDb(dbPath: string): Db {
       opened_at_ms INTEGER NOT NULL,
       closed_at_ms INTEGER,
       duration_ms INTEGER,
+      open_resolution_ms INTEGER,
+      close_resolution_ms INTEGER,
       ask_buy REAL NOT NULL,
       bid_sell REAL NOT NULL,
       net_spread_pct REAL NOT NULL,
@@ -48,5 +50,11 @@ export function initDb(dbPath: string): Db {
       PRIMARY KEY (exchange, symbol)
     );
   `)
+
+  // Migrate existing DBs: add resolution columns if absent (ALTER TABLE throws if column exists)
+  for (const col of ['open_resolution_ms INTEGER', 'close_resolution_ms INTEGER']) {
+    try { db.exec(`ALTER TABLE opportunities ADD COLUMN ${col}`) } catch {}
+  }
+
   return db
 }

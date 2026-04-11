@@ -444,7 +444,7 @@ function buildHtml(): string {
       <div class="section-controls">
         <select class="filter" id="pairs-sort">
           <option value="opps">Sort: Most Opportunities</option>
-          <option value="spread">Sort: Best Spread</option>
+          <option value="spread" selected>Sort: Best Spread</option>
           <option value="pnl">Sort: Total PnL</option>
           <option value="volume">Sort: Volume 24h</option>
         </select>
@@ -580,7 +580,7 @@ function buildHtml(): string {
   let currentData    = null   // from /api/snapshot
   let allPairsData   = null   // from /api/pairs (loaded on demand)
   let showAllPairs   = false
-  let pairsSort      = 'opps'
+  let pairsSort      = 'spread'
   let pairsSearch    = ''
   const PAIRS_DEFAULT_LIMIT = 8
   let pairsLimit     = PAIRS_DEFAULT_LIMIT

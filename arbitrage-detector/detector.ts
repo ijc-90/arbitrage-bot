@@ -13,16 +13,18 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-function parseArgs(argv: string[]): { configPath: string; dbPath: string | null } {
+function parseArgs(argv: string[]): { configPath: string; dbPath: string | null; envPath: string | null } {
   let configPath = 'config.yaml'
   let dbPath: string | null = null
+  let envPath: string | null = null
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--config' && argv[i + 1]) configPath = argv[++i]
     else if (argv[i] === '--db' && argv[i + 1]) dbPath = argv[++i]
+    else if (argv[i] === '--env' && argv[i + 1]) envPath = argv[++i]
   }
 
-  return { configPath, dbPath }
+  return { configPath, dbPath, envPath }
 }
 
 function meetsVolumeFloor(db: Database, symbol: string, minVol: number): boolean {
@@ -38,10 +40,10 @@ function meetsVolumeFloor(db: Database, symbol: string, minVol: number): boolean
 }
 
 async function main(): Promise<void> {
-  const { configPath, dbPath } = parseArgs(process.argv.slice(2))
+  const { configPath, dbPath, envPath } = parseArgs(process.argv.slice(2))
 
   const config = loadConfig(path.resolve(process.cwd(), configPath))
-  const env = loadEnv()
+  const env = loadEnv(envPath ?? undefined)
 
   const logsDir = path.resolve(process.cwd(), 'logs')
   const resolvedDbPath = dbPath ?? path.join(logsDir, 'arb.db')

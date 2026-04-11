@@ -48,10 +48,11 @@ export function loadConfig(configPath: string): Config {
   return yaml.load(raw) as Config
 }
 
-export function loadEnv(): Env {
-  const envFile = process.env.NODE_ENV === 'test' ? '.env.test' : '.env'
-  const envPath = path.resolve(process.cwd(), envFile)
-  dotenv.config({ path: envPath })
+export function loadEnv(envPath?: string): Env {
+  const resolved = envPath
+    ? path.resolve(process.cwd(), envPath)
+    : path.resolve(process.cwd(), process.env.NODE_ENV === 'test' ? '.env.test' : '.env')
+  dotenv.config({ path: resolved })
 
   const exchangeUrls: Record<string, string> = {}
   const wsUrls: Record<string, string> = {}

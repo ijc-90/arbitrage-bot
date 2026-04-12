@@ -100,6 +100,21 @@ BYBIT_WS_URL=wss://stream.bybit.com
 
 ---
 
+#### ~~FA: Funding Rate Arbitrage~~ ✓ DONE
+Delta-neutral positions: long spot + short USDT-M perp on the same exchange. Collects funding payments every 8h with near-zero directional exposure. USDT in, USDT out.
+
+- **`perpClient.ts`** — HMAC-SHA256 signed perp APIs for Binance (`fapi.binance.com`) and Bybit (`category=linear`). `getAllFundingRates()` (bulk, one call per exchange), `getPerpPosition()`, `setLeverage()`, `placePerpOrder()` (MARKET + reduceOnly), `cancelPerpOrder()`, `getSpotAskPrice()`. Dry-run mode logs `[FUNDING-DRY-RUN]`. BingX: scanner-only (funding rate polling), no execution (thin liquidity).
+- **`fundingScanner.ts`** — Polls all exchanges every `scan_interval_ms`. Batch-inserts all rates to `funding_rates` table. Fires `signal` events when rate > `entry_threshold_pct` and settlement is > `min_time_to_settlement_ms` away. Tracks open positions (via `markOpen`/`markClosed`) to avoid double-signalling.
+- **`fundingCoordinator.ts`** — `onSignal()`: max positions check → setLeverage → get spot ask → parallel spot BUY + perp SELL → hedge if one leg fails → persist to `funding_positions`. `poll()` loop every `poll_interval_ms`: checks funding normalized, funding flipped negative, max hold time, liquidation proximity, stop-loss, basis alert. `exit()`: parallel spot SELL + perp BUY (close) with one retry → computed PnL (funding collected estimate + spot/perp round-trip - fees) → DB close. `recoverOpenPositions()` on startup.
+- **`db.ts`** — `funding_rates` and `funding_positions` tables added.
+- **`config.ts`** / **`config.yaml`** — `FundingArbConfig` interface, full config block with defaults. Disabled by default (`enabled: false`), dry-run by default (`dry_run: true`).
+- **`detector.ts`** — Wired: PerpClient → FundingScanner → FundingCoordinator. Runs alongside spot arb loop independently. SIGINT/SIGTERM stops scanner.
+- **`dashboard/server.ts`** — `/api/funding` endpoint (graceful when tables absent), `GET /api/funding` returns rates + positions + stats. Funding section in UI: stats bar, active positions table, funding rate monitor (sorted by rate, shows APR, countdown to settlement). Routes table now expandable (click to show historical opps inline).
+
+**To enable:** set `funding_arb.enabled: true` and `execution_enabled: true` in `config.yaml`. Keep `dry_run: true` for initial testing. Requires API keys with trade permissions on Binance/Bybit.
+
+---
+
 #### AT-8: Withdrawal and transfer automation for capital rebalancing
 Model on-chain withdrawal fees and block confirmation times per asset/network (USDT-TRC20 ~$1, ERC20 ~$15 — critical for sizing). Add withdrawal API calls to `ExchangeClient`. Build a rebalancing trigger that batches withdrawals when inventory imbalance exceeds a threshold. Account for in-flight capital when computing available inventory.
 

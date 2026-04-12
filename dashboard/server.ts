@@ -181,6 +181,44 @@ function querySnapshot(dbPath: string) {
   }
 }
 
+function queryFundingData(dbPath: string) {
+  const db = openDb(dbPath)
+  if (!db) return null
+  try {
+    let rates: any[] = []
+    let positions: any[] = []
+    let stats = { active: 0, total_funding_usdt: 0, total_realized_pnl_usdt: 0, closed_count: 0 }
+
+    try {
+      rates = db.prepare(`
+        SELECT exchange, symbol, funding_rate_pct, mark_price, next_funding_time_ms, fetched_at_ms
+        FROM funding_rates
+        WHERE id IN (SELECT MAX(id) FROM funding_rates GROUP BY exchange, symbol)
+        ORDER BY funding_rate_pct DESC
+      `).all() as any[]
+    } catch {}
+
+    try {
+      positions = db.prepare(`
+        SELECT * FROM funding_positions ORDER BY opened_at_ms DESC LIMIT 20
+      `).all() as any[]
+      const s = db.prepare(`
+        SELECT
+          COUNT(CASE WHEN closed_at_ms IS NULL THEN 1 END) AS active,
+          COALESCE(SUM(CASE WHEN closed_at_ms IS NOT NULL THEN funding_collected_usdt ELSE 0 END), 0) AS total_funding_usdt,
+          COALESCE(SUM(realized_pnl_usdt), 0) AS total_realized_pnl_usdt,
+          COUNT(CASE WHEN closed_at_ms IS NOT NULL THEN 1 END) AS closed_count
+        FROM funding_positions
+      `).get() as any
+      if (s) stats = s
+    } catch {}
+
+    return { rates, positions, stats }
+  } finally {
+    db.close()
+  }
+}
+
 function queryOpportunity(dbPath: string, id: string) {
   const db = openDb(dbPath)
   if (!db) return null
@@ -402,6 +440,36 @@ function buildHtml(): string {
   .sparkline-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 12px; }
   .sparkline-legend { display: flex; gap: 16px; margin-top: 8px; font-size: 10px; color: var(--dim); }
   .sparkline-legend span { display: flex; align-items: center; gap: 4px; }
+
+  /* ── Expandable route rows ── */
+  tr.route-expand-row td { padding: 0; background: #0d0d1a; border-bottom: 2px solid var(--border); }
+  .route-expand-inner { padding: 8px 12px 12px 28px; }
+  .route-expand-inner table { border: 1px solid #1e1e2e; background: #0d0d1a; border-radius: 4px; }
+  .route-expand-inner th { font-size: 10px; padding: 5px 10px; background: #0d0d1a; }
+  .route-expand-inner td { padding: 5px 10px; font-size: 11px; border-bottom: 1px solid #111120; }
+  .route-expand-inner tr:last-child td { border-bottom: none; }
+  .route-expand-inner tr:hover td { background: #12121e; }
+  .route-expand-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); margin-bottom: 6px; }
+  tr.route-row.expanded > td:first-child::before { content: '▾ '; font-size: 9px; color: var(--dim); }
+  tr.route-row:not(.expanded) > td:first-child::before { content: '▸ '; font-size: 9px; color: var(--dim); opacity: 0.4; }
+
+  /* ── Funding section ── */
+  .page-divider {
+    display: flex; align-items: center; gap: 12px;
+    margin: 32px 0 20px;
+    border-top: 1px solid var(--border);
+    padding-top: 16px;
+  }
+  .divider-label {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--purple); white-space: nowrap;
+  }
+  .page-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .funding-rate-pos { color: var(--green); }
+  .funding-rate-neg { color: var(--red); }
+  .funding-rate-neu { color: var(--dim); }
+  .tag.active-pos { background: #1f1a2f; color: var(--purple); animation: pulse 2s ease-in-out infinite; }
+  .tag.pos-closed { background: #1a1a2f; color: var(--dim); }
 </style>
 </head>
 <body>
@@ -529,6 +597,62 @@ function buildHtml(): string {
       </tbody>
     </table>
   </div>
+
+<div class="page-divider"><span class="divider-label">Funding Rate Arbitrage</span></div>
+
+<div id="funding-section">
+  <div class="stats-bar">
+    <div class="stat-card">
+      <div class="label">Active Positions</div>
+      <div class="value purple" id="fr-active">–</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Funding Collected</div>
+      <div class="value green" id="fr-collected">–</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Realized PnL</div>
+      <div class="value green" id="fr-pnl">–</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Positions Closed</div>
+      <div class="value blue" id="fr-closed-count">–</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><h2>Active Positions</h2></div>
+    <table>
+      <thead>
+        <tr>
+          <th>Symbol</th><th>Exchange</th><th>Entry Rate /8h</th>
+          <th>Qty</th><th>Capital/Side</th><th>Open For</th><th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="fr-positions-body">
+        <tr><td colspan="7" style="color:var(--dim);text-align:center">No active positions</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <div class="section-header">
+      <h2>Funding Rate Monitor</h2>
+      <span style="color:var(--dim);font-size:11px" id="fr-rates-meta"></span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Symbol</th><th>Exchange</th><th>Rate /8h</th><th>APR est.</th>
+          <th>Mark Price</th><th>Next Settlement</th><th>Updated</th>
+        </tr>
+      </thead>
+      <tbody id="fr-rates-body">
+        <tr><td colspan="7" style="color:var(--dim);text-align:center">No funding data — enable <code style="color:var(--purple)">funding_arb.enabled: true</code> in config</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
 
 <!-- Detail panel -->
 <div id="detail-overlay"></div>
@@ -664,7 +788,7 @@ function buildHtml(): string {
       const pnl  = p.total_pnl_usdt > 0  ? \`<span class="spread-pos">\${fmtUsdt(p.total_pnl_usdt)}</span>\` : '<span style="color:var(--dim)">–</span>'
       const seen = p.fetched_at_ms ? fmtAgo(p.fetched_at_ms) : '–'
       const lowLiq = lf && p.min_volume_usdt > 0 && (lf.capitalUsdt / p.min_volume_usdt * 100) > lf.thresholdPct
-      return \`<tr class="\${p.is_monitored ? '' : 'unmonitored'}\${lowLiq ? ' low-liquidity' : ''}">
+      return \`<tr class="route-row \${p.is_monitored ? '' : 'unmonitored'}\${lowLiq ? ' low-liquidity' : ''}" data-route="\${esc(p.symbol)}">
         <td>\${dot}<span class="pair-link" data-pair="\${esc(p.symbol)}">\${esc(p.symbol)}</span></td>
         <td>\${dir}</td>
         <td>\${spread}</td>
@@ -901,14 +1025,61 @@ function buildHtml(): string {
     if (row) openDetailPanel(row.dataset.oppId)
   })
 
+  // ── Route row expansion ────────────────────────────────────────────────────
+  function renderRouteOpps(pair) {
+    const opps = (currentData?.opportunities || []).filter(o => o.pair === pair)
+    if (opps.length === 0) {
+      return \`<tr><td colspan="6" style="color:var(--dim);text-align:center;padding:8px 0">No opportunities recorded for this route yet</td></tr>\`
+    }
+    return opps.slice(0, 8).map(o => {
+      const isOpen = !o.close_reason
+      const tag = isOpen
+        ? '<span class="tag open">OPEN</span>'
+        : o.close_reason === 'CONVERGENCE' ? '<span class="tag conv">CONV</span>' : '<span class="tag err">ERR</span>'
+      return \`<tr class="clickable" data-opp-id="\${esc(o.id)}">
+        <td style="color:var(--dim);font-size:10px">\${esc(o.id)}</td>
+        <td>\${esc(o.exchange_buy)} <span class="arrow">→</span> \${esc(o.exchange_sell)}</td>
+        <td class="\${spreadClass(o.net_spread_pct)}">\${fmtPct(o.net_spread_pct)}</td>
+        <td class="\${spreadClass(o.peak_spread_pct)}">\${fmtPct(o.peak_spread_pct)}</td>
+        <td class="spread-pos">\${fmtUsdt(o.estimated_pnl_usdt)}</td>
+        <td>\${isOpen ? fmtDur(Date.now() - o.opened_at_ms) : fmtDurRange(o.duration_ms, o.open_resolution_ms)} &nbsp;\${tag}</td>
+      </tr>\`
+    }).join('') + (opps.length > 8 ? \`<tr><td colspan="6" style="color:var(--dim);font-size:10px;text-align:center">\${opps.length - 8} more — see Opportunities table below</td></tr>\` : '')
+  }
+
+  function toggleRouteExpand(routeRow) {
+    const pair = routeRow.dataset.route
+    const existingExpand = routeRow.nextElementSibling
+    if (existingExpand && existingExpand.classList.contains('route-expand-row')) {
+      existingExpand.remove()
+      routeRow.classList.remove('expanded')
+      return
+    }
+    routeRow.classList.add('expanded')
+    const expandRow = document.createElement('tr')
+    expandRow.className = 'route-expand-row'
+    expandRow.innerHTML = \`<td colspan="8">
+      <div class="route-expand-inner">
+        <div class="route-expand-label">Recent opportunities — \${esc(pair)}</div>
+        <table>
+          <thead><tr>
+            <th>ID</th><th>Direction</th><th>Open Spread</th><th>Peak Spread</th><th>Est. PnL</th><th>Duration</th>
+          </tr></thead>
+          <tbody>\${renderRouteOpps(pair)}</tbody>
+        </table>
+      </div>
+    </td>\`
+    expandRow.querySelector('tbody').addEventListener('click', e => {
+      const row = e.target.closest('tr[data-opp-id]')
+      if (row) openDetailPanel(row.dataset.oppId)
+    })
+    routeRow.after(expandRow)
+  }
+
   document.getElementById('pairs-body').addEventListener('click', e => {
-    const link = e.target.closest('.pair-link')
-    if (!link) return
-    const pair = link.dataset.pair
-    const sel = document.getElementById('opp-pair-filter')
-    sel.value = sel.value === pair ? '' : pair
-    if (currentData) renderOpps(currentData.opportunities)
-    document.querySelector('#opps-body').closest('.section').scrollIntoView({ behavior: 'smooth' })
+    const routeRow = e.target.closest('tr.route-row')
+    if (!routeRow) return
+    toggleRouteExpand(routeRow)
   })
 
   document.getElementById('detail-close').addEventListener('click', closeDetailPanel)
@@ -951,6 +1122,83 @@ function buildHtml(): string {
 
   fetchDecay()
   setInterval(fetchDecay, 60000)  // refresh every minute — decay stats are slow-moving
+
+  // ── Funding rate arb ───────────────────────────────────────────────────────
+  function fmtRate(v) {
+    if (v == null) return '–'
+    const cls = v > 0.02 ? 'funding-rate-pos' : v < 0 ? 'funding-rate-neg' : 'funding-rate-neu'
+    const sign = v >= 0 ? '+' : ''
+    return \`<span class="\${cls}">\${sign}\${v.toFixed(4)}%</span>\`
+  }
+  function fmtApr(ratePct) {
+    if (ratePct == null) return '–'
+    const apr = ratePct * 3 * 365  // 3 settlements/day × 365
+    const cls = apr > 20 ? 'funding-rate-pos' : apr < 0 ? 'funding-rate-neg' : 'funding-rate-neu'
+    return \`<span class="\${cls}">\${apr >= 0 ? '+' : ''}\${apr.toFixed(1)}%</span>\`
+  }
+  function fmtCountdown(ms) {
+    if (!ms) return '–'
+    const diff = ms - Date.now()
+    if (diff <= 0) return 'now'
+    const h = Math.floor(diff / 3600000)
+    const m = Math.floor((diff % 3600000) / 60000)
+    return h > 0 ? \`\${h}h \${m}m\` : \`\${m}m\`
+  }
+
+  function renderFunding(data) {
+    const s = data.stats
+    document.getElementById('fr-active').textContent       = s.active ?? '–'
+    document.getElementById('fr-collected').textContent    = fmtUsdt(s.total_funding_usdt)
+    document.getElementById('fr-pnl').textContent          = fmtUsdt(s.total_realized_pnl_usdt)
+    document.getElementById('fr-closed-count').textContent = s.closed_count ?? '–'
+
+    // Active positions
+    const posBody = document.getElementById('fr-positions-body')
+    const activePosns = (data.positions || []).filter(p => !p.closed_at_ms)
+    if (activePosns.length === 0) {
+      posBody.innerHTML = \`<tr><td colspan="7" style="color:var(--dim);text-align:center">No active positions</td></tr>\`
+    } else {
+      posBody.innerHTML = activePosns.map(p => \`<tr>
+        <td>\${esc(p.symbol)}</td>
+        <td style="color:var(--dim)">\${esc(p.exchange)}</td>
+        <td>\${fmtRate(p.entry_funding_rate_pct)}</td>
+        <td style="color:var(--blue)">\${p.qty != null ? p.qty.toFixed(6) : '–'}</td>
+        <td style="color:var(--dim)">\${fmtUsdt(p.capital_per_side_usdt)}</td>
+        <td>\${fmtDur(Date.now() - p.opened_at_ms)}</td>
+        <td>\${p.dry_run ? '<span class="tag err">DRY-RUN</span>' : '<span class="tag active-pos">LIVE</span>'}</td>
+      </tr>\`).join('')
+    }
+
+    // Funding rates monitor
+    const ratesBody = document.getElementById('fr-rates-body')
+    const meta = document.getElementById('fr-rates-meta')
+    const rates = data.rates || []
+    if (rates.length === 0) {
+      meta.textContent = ''
+      ratesBody.innerHTML = \`<tr><td colspan="7" style="color:var(--dim);text-align:center">No funding data — enable <code style="color:var(--purple)">funding_arb.enabled: true</code> in config</td></tr>\`
+    } else {
+      meta.textContent = \`\${rates.length} pairs\`
+      ratesBody.innerHTML = rates.map(r => \`<tr>
+        <td>\${esc(r.symbol)}</td>
+        <td style="color:var(--dim)">\${esc(r.exchange)}</td>
+        <td>\${fmtRate(r.funding_rate_pct)}</td>
+        <td>\${fmtApr(r.funding_rate_pct)}</td>
+        <td style="color:var(--dim)">\${r.mark_price != null ? r.mark_price.toLocaleString() : '–'}</td>
+        <td style="color:var(--blue)">\${fmtCountdown(r.next_funding_time_ms)}</td>
+        <td style="color:var(--dim)">\${fmtAgo(r.fetched_at_ms)}</td>
+      </tr>\`).join('')
+    }
+  }
+
+  async function fetchFunding() {
+    let data
+    try { data = await (await fetch('/api/funding')).json() } catch { return }
+    if (!data || data.error) return
+    renderFunding(data)
+  }
+
+  fetchFunding()
+  setInterval(fetchFunding, 10000)
 </script>
 </body>
 </html>`
@@ -1063,6 +1311,16 @@ app.get('/api/decay', (_req, res) => {
     res.status(500).json({ error: err.message })
   } finally {
     db.close()
+  }
+})
+
+app.get('/api/funding', (_req, res) => {
+  try {
+    const data = queryFundingData(dbPath)
+    if (!data) { res.status(503).json({ error: 'Database not available yet' }); return }
+    res.json(data)
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
   }
 })
 

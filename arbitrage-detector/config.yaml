@@ -39,3 +39,22 @@ reconciliation_interval_hours: 4     # how often to compare realized PnL vs actu
 reconciliation_tolerance_pct: 0.5    # warn if divergence exceeds 0.5% of cumulative PnL
 
 dry_run_sandbox: true               # when true, logs [DRY-RUN] on order calls; use testnet URLs in .env
+
+# Funding rate arbitrage (delta-neutral: long spot + short perp, same exchange)
+# Collects funding payments every 8h with near-zero directional exposure.
+# Requires API keys with trade permissions. Start with dry_run: true.
+funding_arb:
+  enabled: false
+  dry_run: true                          # set false to place real orders
+  scan_interval_ms: 60000               # poll funding rates every 60s
+  poll_interval_ms: 60000               # check open positions every 60s
+  capital_per_side_usdt: 100            # $100 spot + $100 perp margin per position
+  entry_threshold_pct: 0.05             # enter when funding > 0.05%/8h (approx 66% APR)
+  exit_threshold_pct: 0.01             # exit when funding drops below 0.01%/8h
+  min_time_to_settlement_ms: 600000     # don't enter within 10min of settlement
+  max_hold_hours: 72                    # force-close after 3 days
+  max_positions: 3                      # max simultaneous positions
+  stop_loss_pct: 2.0                    # exit if unrealized perp loss > 2% of notional
+  liquidation_buffer_pct: 10.0          # exit if mark within 10% of liquidation price
+  max_basis_pct: 0.5                    # alert if perp-spot basis > 0.5%
+  leverage: 1                           # 1x = fully collateralised (safest)

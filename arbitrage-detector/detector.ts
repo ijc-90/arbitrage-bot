@@ -12,6 +12,9 @@ import { RiskManager } from './riskManager'
 import { ExecutionCoordinator } from './executionCoordinator'
 import { Reconciler } from './reconciler'
 import { makeAlerter } from './alerting'
+import { PerpClient } from './perpClient'
+import { FundingScanner } from './fundingScanner'
+import { FundingCoordinator } from './fundingCoordinator'
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -193,8 +196,43 @@ async function main(): Promise<void> {
     ? new WsFeedManager(env.wsUrls, config.staleness_threshold_ms ?? 2000)
     : null
 
-  process.on('SIGINT', () => { wsFeed?.disconnect(); reconciler?.stop(); logger.flush(); process.exit(0) })
-  process.on('SIGTERM', () => { wsFeed?.disconnect(); reconciler?.stop(); logger.flush(); process.exit(0) })
+  // Funding rate arbitrage module
+  let fundingScanner: FundingScanner | null = null
+  let fundingCoordinator: FundingCoordinator | null = null
+
+  if (config.funding_arb?.enabled) {
+    const fa = config.funding_arb
+    const fundingExchanges = fa.exchanges ?? keyedExchanges
+    if (fundingExchanges.length === 0) {
+      console.warn('[funding] no exchanges with API keys — funding arb disabled (requires API keys)')
+    } else {
+      const perpClient = new PerpClient(env)
+      if (config.execution_enabled) {
+        perpClient.enableExecution(fa.dry_run !== false)
+      }
+
+      fundingScanner = new FundingScanner(perpClient, fa, db, alert, fundingExchanges)
+      fundingCoordinator = new FundingCoordinator(perpClient, client, fundingScanner, fa, db, alert)
+
+      fundingScanner.on('signal', sig => {
+        fundingCoordinator!.onSignal(sig).catch(err => {
+          console.error('[funding] unhandled onSignal error:', err)
+        })
+      })
+
+      // Recover any positions open from a previous session
+      await fundingCoordinator.recoverOpenPositions()
+
+      fundingScanner.start()
+      const modeStr = fa.dry_run !== false ? 'DRY-RUN' : 'LIVE'
+      console.log(`[funding] arb ENABLED (${modeStr}) — exchanges: ${fundingExchanges.join(', ')}  capital: $${fa.capital_per_side_usdt ?? 100}/side  threshold: ${fa.entry_threshold_pct ?? 0.05}%/8h`)
+    }
+  } else {
+    console.log('[funding] arb DISABLED (set funding_arb.enabled: true to enable)')
+  }
+
+  process.on('SIGINT', () => { wsFeed?.disconnect(); reconciler?.stop(); fundingScanner?.stop(); logger.flush(); process.exit(0) })
+  process.on('SIGTERM', () => { wsFeed?.disconnect(); reconciler?.stop(); fundingScanner?.stop(); logger.flush(); process.exit(0) })
 
   const configuredExchanges = Object.keys(config.exchanges).filter(ex => {
     if (env.exchangeUrls[ex]) return true

@@ -41,6 +41,26 @@ export interface Config {
   reconciliation_interval_hours?: number  // how often to run balance reconciliation (default 4)
   reconciliation_tolerance_pct?: number   // warn when PnL vs balance diverges by > this % (default 0.5)
   dry_run_sandbox?: boolean             // log [DRY-RUN] prefix on all order calls (default false)
+  funding_arb?: FundingArbConfig
+}
+
+export interface FundingArbConfig {
+  enabled: boolean
+  dry_run?: boolean                        // log [FUNDING-DRY-RUN], no real orders (default true)
+  scan_interval_ms?: number               // how often to poll funding rates (default 60000)
+  poll_interval_ms?: number               // how often to check open positions (default 60000)
+  capital_per_side_usdt?: number          // deployed per leg; total = 2x this (default 100)
+  entry_threshold_pct?: number            // enter when rate > this (default 0.05 = 0.05%/8h ≈ 66% APR)
+  exit_threshold_pct?: number             // exit when rate drops below this (default 0.01)
+  min_time_to_settlement_ms?: number      // don't enter within N ms of settlement (default 600000 = 10min)
+  max_hold_hours?: number                 // force-close after N hours (default 72)
+  max_positions?: number                  // max simultaneous funding positions (default 3)
+  stop_loss_pct?: number                  // exit if unrealized perp loss > N% of notional (default 2.0)
+  liquidation_buffer_pct?: number         // exit if mark within N% of liquidation price (default 10.0)
+  max_basis_pct?: number                  // alert if perp-spot basis > N% (default 0.5)
+  leverage?: number                       // perp leverage (default 1 = fully collateralised)
+  pairs?: string[]                        // explicit list; if absent, scans all listed perps
+  exchanges?: string[]                    // exchanges to scan; if absent, uses all with API keys
 }
 
 export interface ApiKey {
